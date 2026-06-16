@@ -1,0 +1,24 @@
+{
+  "app_database_url": "sqlite:///data/pipeline.db",
+  "llm": {
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini"
+  },
+  "database": {
+    "url": ""
+  },
+  "publish": {
+    "pending_output_dir": "data/pending"
+  },
+  "wechat": {
+    "app_id": "",
+    "app_secret": "",
+    "auto_publish": false,
+    "enable_mass_send": false
+  },
+  "scheduler": {
+    "enabled": false,
+    "interval_minutes": 240
+  }
+}
