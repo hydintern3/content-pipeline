@@ -9,6 +9,12 @@ const pullRecentButton = document.querySelector("#pullRecentButton");
 const fillExampleButton = document.querySelector("#fillExampleButton");
 const clearButton = document.querySelector("#clearButton");
 const refreshTasksButton = document.querySelector("#refreshTasksButton");
+const settingsButton = document.querySelector("#settingsButton");
+const configPanel = document.querySelector("#configPanel");
+const configForm = document.querySelector("#configForm");
+const closeSettingsButton = document.querySelector("#closeSettingsButton");
+const saveConfigButton = document.querySelector("#saveConfigButton");
+const configNote = document.querySelector("#configNote");
 const toast = document.querySelector("#toast");
 
 let currentArticles = [];
@@ -17,6 +23,21 @@ const platformLabels = {
   xiaohongshu: "小红书",
   zhihu: "知乎",
   official_account: "公众号",
+};
+
+const overrideLabels = {
+  app_database_url: "本地数据库",
+  llm_api_key: "大模型 API Key",
+  llm_base_url: "大模型 Base URL",
+  llm_model: "大模型名称",
+  external_database_url: "外部素材数据库",
+  pending_output_dir: "待发布目录",
+  wechat_app_id: "公众号 App ID",
+  wechat_app_secret: "公众号 App Secret",
+  wechat_auto_publish: "公众号自动发布",
+  wechat_enable_mass_send: "公众号群发",
+  scheduler_enabled: "定时任务",
+  scheduler_interval_minutes: "定时间隔",
 };
 
 const example = {
@@ -76,6 +97,71 @@ function fillForm(values) {
       form.elements[key].value = value;
     }
   });
+}
+
+function fillConfigForm(data) {
+  const config = data.config;
+  configForm.elements.app_database_url.value = config.app_database_url || "";
+  configForm.elements.llm_base_url.value = config.llm.base_url || "";
+  configForm.elements.llm_model.value = config.llm.model || "";
+  configForm.elements.llm_api_key.value = "";
+  configForm.elements.llm_api_key.placeholder = config.llm.api_key_configured
+    ? "已保存，留空保持不变"
+    : "未配置";
+  configForm.elements.database_url.value = "";
+  configForm.elements.database_url.placeholder = config.database.configured
+    ? "已保存，留空保持不变"
+    : "未配置";
+  configForm.elements.pending_output_dir.value = config.publish.pending_output_dir || "";
+  configForm.elements.wechat_app_id.value = config.wechat.app_id || "";
+  configForm.elements.wechat_app_secret.value = "";
+  configForm.elements.wechat_app_secret.placeholder = config.wechat.app_secret_configured
+    ? "已保存，留空保持不变"
+    : "未配置";
+  configForm.elements.wechat_auto_publish.checked = Boolean(config.wechat.auto_publish);
+  configForm.elements.wechat_enable_mass_send.checked = Boolean(config.wechat.enable_mass_send);
+  configForm.elements.scheduler_enabled.checked = Boolean(config.scheduler.enabled);
+  configForm.elements.scheduler_interval_minutes.value = config.scheduler.interval_minutes || 240;
+
+  const overrides = Object.entries(data.env_overrides || {})
+    .filter(([, enabled]) => enabled)
+    .map(([key]) => overrideLabels[key] || key);
+  configNote.textContent = overrides.length
+    ? `环境变量正在接管：${overrides.join("、")}`
+    : "";
+}
+
+function configPayload() {
+  const data = Object.fromEntries(new FormData(configForm).entries());
+  return {
+    app_database_url: data.app_database_url,
+    llm: {
+      base_url: data.llm_base_url,
+      model: data.llm_model,
+      api_key: data.llm_api_key,
+    },
+    database: {
+      url: data.database_url,
+    },
+    publish: {
+      pending_output_dir: data.pending_output_dir,
+    },
+    wechat: {
+      app_id: data.wechat_app_id,
+      app_secret: data.wechat_app_secret,
+      auto_publish: configForm.elements.wechat_auto_publish.checked,
+      enable_mass_send: configForm.elements.wechat_enable_mass_send.checked,
+    },
+    scheduler: {
+      enabled: configForm.elements.scheduler_enabled.checked,
+      interval_minutes: Number(data.scheduler_interval_minutes || 240),
+    },
+  };
+}
+
+function setConfigSaving(isSaving) {
+  saveConfigButton.disabled = isSaving;
+  saveConfigButton.textContent = isSaving ? "保存中" : "保存设置";
 }
 
 function setLoading(isLoading) {
@@ -271,6 +357,11 @@ async function loadStatus() {
   statusRow.innerHTML = chips.map((chip) => `<span>${chip}</span>`).join("");
 }
 
+async function loadConfig() {
+  const payload = await requestJson("/api/config");
+  fillConfigForm(payload.data);
+}
+
 async function loadTasks() {
   const payload = await requestJson("/api/tasks?limit=20");
   const tasks = payload.tasks;
@@ -356,6 +447,40 @@ clearButton.addEventListener("click", () => {
 });
 
 refreshTasksButton.addEventListener("click", loadTasks);
+
+settingsButton.addEventListener("click", async () => {
+  configPanel.classList.toggle("hidden");
+  if (!configPanel.classList.contains("hidden")) {
+    try {
+      await loadConfig();
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+});
+
+closeSettingsButton.addEventListener("click", () => {
+  configPanel.classList.add("hidden");
+});
+
+configForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setConfigSaving(true);
+  try {
+    const payload = await requestJson("/api/config", {
+      method: "POST",
+      body: JSON.stringify({ config: configPayload() }),
+    });
+    fillConfigForm(payload.data);
+    await loadStatus();
+    await loadTasks();
+    showToast("设置已保存");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setConfigSaving(false);
+  }
+});
 
 loadStatus().catch((error) => showToast(error.message));
 loadTasks().catch(() => {});

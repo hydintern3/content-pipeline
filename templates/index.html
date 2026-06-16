@@ -13,10 +13,83 @@
           <p class="eyebrow">Content Pipeline</p>
           <h1>内容生成与分发管线</h1>
         </div>
-        <div class="status-row" id="statusRow">
-          <span>配置读取中</span>
+        <div class="topbar-actions">
+          <div class="status-row" id="statusRow">
+            <span>配置读取中</span>
+          </div>
+          <button type="button" class="secondary-button" id="settingsButton">设置</button>
         </div>
       </header>
+
+      <section class="panel config-panel hidden" id="configPanel">
+        <div class="panel-heading">
+          <div>
+            <p>设置</p>
+            <h2>运行配置</h2>
+          </div>
+          <button type="button" class="ghost-button" id="closeSettingsButton">关闭</button>
+        </div>
+
+        <form id="configForm" class="config-form">
+          <label class="field wide">
+            <span>本地数据库 URL</span>
+            <input name="app_database_url" placeholder="sqlite:///data/pipeline.db">
+          </label>
+
+          <label class="field">
+            <span>大模型 Base URL</span>
+            <input name="llm_base_url" placeholder="https://api.openai.com/v1">
+          </label>
+
+          <label class="field">
+            <span>大模型名称</span>
+            <input name="llm_model" placeholder="gpt-4o-mini">
+          </label>
+
+          <label class="field">
+            <span>大模型 API Key</span>
+            <input type="password" name="llm_api_key" autocomplete="new-password" placeholder="留空保持不变">
+          </label>
+
+          <label class="field">
+            <span>外部素材数据库 URL</span>
+            <input type="password" name="database_url" autocomplete="new-password" placeholder="留空保持不变">
+          </label>
+
+          <label class="field">
+            <span>待发布目录</span>
+            <input name="pending_output_dir" placeholder="data/pending">
+          </label>
+
+          <label class="field">
+            <span>公众号 App ID</span>
+            <input name="wechat_app_id" placeholder="wx...">
+          </label>
+
+          <label class="field">
+            <span>公众号 App Secret</span>
+            <input type="password" name="wechat_app_secret" autocomplete="new-password" placeholder="留空保持不变">
+          </label>
+
+          <fieldset class="switches wide">
+            <legend>发布与定时</legend>
+            <label><input type="checkbox" name="wechat_auto_publish"> 公众号自动发布</label>
+            <label><input type="checkbox" name="wechat_enable_mass_send"> 允许公众号群发</label>
+            <label><input type="checkbox" name="scheduler_enabled"> 定时任务</label>
+          </fieldset>
+
+          <label class="field">
+            <span>定时间隔（分钟）</span>
+            <input type="number" min="5" step="1" name="scheduler_interval_minutes" placeholder="240">
+          </label>
+
+          <div class="config-note wide" id="configNote"></div>
+
+          <div class="button-row">
+            <button type="submit" class="primary-button" id="saveConfigButton">保存设置</button>
+          </div>
+        </form>
+      </section>
 
       <main class="workspace">
         <section class="panel input-panel">
@@ -97,4 +170,3 @@
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>
-

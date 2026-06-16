@@ -51,6 +51,13 @@ textarea {
   padding: 22px 24px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
 .eyebrow,
 .panel-heading p {
   margin: 0 0 5px;
@@ -105,6 +112,10 @@ h3 {
   padding: 20px;
 }
 
+.config-panel {
+  margin-top: 18px;
+}
+
 .panel-heading {
   display: flex;
   justify-content: space-between;
@@ -113,14 +124,16 @@ h3 {
   margin-bottom: 18px;
 }
 
-.material-form {
+.material-form,
+.config-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
 
 .field,
-.platforms {
+.platforms,
+.switches {
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -128,12 +141,15 @@ h3 {
 
 .field.wide,
 .platforms,
+.switches,
+.config-note,
 .button-row {
   grid-column: 1 / -1;
 }
 
 .field span,
-.platforms legend {
+.platforms legend,
+.switches legend {
   color: #344054;
   font-size: 14px;
   font-weight: 700;
@@ -161,7 +177,8 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(38, 102, 194, 0.12);
 }
 
-.platforms {
+.platforms,
+.switches {
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 12px;
@@ -169,19 +186,28 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
-.platforms legend {
+.platforms legend,
+.switches legend {
   padding: 0 6px;
 }
 
-.platforms label {
+.platforms label,
+.switches label {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   margin-right: 14px;
 }
 
-.platforms input {
+.platforms input,
+.switches input {
   width: auto;
+}
+
+.config-note {
+  color: var(--muted);
+  font-size: 13px;
+  min-height: 18px;
 }
 
 .button-row {
@@ -444,6 +470,12 @@ pre {
     display: block;
   }
 
+  .topbar-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-top: 16px;
+  }
+
   .workspace {
     margin-top: 14px;
   }
@@ -453,7 +485,8 @@ pre {
     margin-top: 14px;
   }
 
-  .material-form {
+  .material-form,
+  .config-form {
     grid-template-columns: 1fr;
   }
 
@@ -463,6 +496,5 @@ pre {
 
   .status-row {
     justify-content: flex-start;
-    margin-top: 16px;
   }
 }

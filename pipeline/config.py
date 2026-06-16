@@ -11,6 +11,41 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = BASE_DIR / "config.json"
 
 
+def resolve_config_path(config_path: str | Path | None = None) -> Path:
+    configured_path = config_path or os.getenv("CONTENT_PIPELINE_CONFIG")
+    resolved = Path(configured_path) if configured_path else DEFAULT_CONFIG_PATH
+    if not resolved.is_absolute():
+        resolved = BASE_DIR / resolved
+    return resolved
+
+
+def default_json_config() -> dict[str, Any]:
+    return {
+        "app_database_url": "sqlite:///data/pipeline.db",
+        "llm": {
+            "api_key": "",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4o-mini",
+        },
+        "database": {
+            "url": "",
+        },
+        "publish": {
+            "pending_output_dir": "data/pending",
+        },
+        "wechat": {
+            "app_id": "",
+            "app_secret": "",
+            "auto_publish": False,
+            "enable_mass_send": False,
+        },
+        "scheduler": {
+            "enabled": False,
+            "interval_minutes": 240,
+        },
+    }
+
+
 def load_env_file(env_file: str | Path | None = None) -> Path | None:
     env_path = Path(env_file or os.getenv("CONTENT_PIPELINE_ENV", ".env"))
     if not env_path.is_absolute():
@@ -32,15 +67,22 @@ def load_env_file(env_file: str | Path | None = None) -> Path | None:
     return env_path
 
 
-def load_json_config() -> dict[str, Any]:
-    configured_path = os.getenv("CONTENT_PIPELINE_CONFIG")
-    config_path = Path(configured_path) if configured_path else DEFAULT_CONFIG_PATH
-    if not config_path.is_absolute():
-        config_path = BASE_DIR / config_path
+def load_json_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    config_path = resolve_config_path(config_path)
     if not config_path.exists():
         return {}
     parsed = json.loads(config_path.read_text(encoding="utf-8"))
     return parsed if isinstance(parsed, dict) else {}
+
+
+def save_json_config(config: dict[str, Any], config_path: str | Path | None = None) -> Path:
+    path = resolve_config_path(config_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def nested_get(config: dict[str, Any], path: str, default: Any = "") -> Any:
