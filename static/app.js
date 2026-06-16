@@ -18,6 +18,9 @@ const configNote = document.querySelector("#configNote");
 const toast = document.querySelector("#toast");
 
 let currentArticles = [];
+let defaultConfigData = null;
+
+const CONFIG_STORAGE_KEY = "contentPipeline.personalConfig.v1";
 
 const platformLabels = {
   xiaohongshu: "小红书",
@@ -47,6 +50,74 @@ const example = {
   keywords: "企业服务, 职场效率, 招商",
   image_paths: "",
 };
+
+function readLocalConfig() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CONFIG_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalConfig(config) {
+  localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+}
+
+function deepMerge(base, override) {
+  const result = { ...base };
+  Object.entries(override || {}).forEach(([key, value]) => {
+    if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      base[key] &&
+      typeof base[key] === "object" &&
+      !Array.isArray(base[key])
+    ) {
+      result[key] = deepMerge(base[key], value);
+      return;
+    }
+    if (value !== undefined && value !== null && value !== "") {
+      result[key] = value;
+    }
+  });
+  return result;
+}
+
+function effectiveConfigData() {
+  if (!defaultConfigData) {
+    return null;
+  }
+  const localConfig = readLocalConfig();
+  const mergedConfig = deepMerge(defaultConfigData.config, localConfig);
+  return {
+    ...defaultConfigData,
+    config: {
+      ...mergedConfig,
+      llm: {
+        ...mergedConfig.llm,
+        api_key_configured: Boolean(
+          localConfig.llm?.api_key || defaultConfigData.config.llm.api_key_configured,
+        ),
+      },
+      database: {
+        ...mergedConfig.database,
+        configured: Boolean(localConfig.database?.url || defaultConfigData.config.database.configured),
+      },
+      wechat: {
+        ...mergedConfig.wechat,
+        app_secret_configured: Boolean(
+          localConfig.wechat?.app_secret || defaultConfigData.config.wechat.app_secret_configured,
+        ),
+      },
+    },
+  };
+}
+
+function requestConfig() {
+  return readLocalConfig();
+}
 
 function showToast(message) {
   toast.textContent = message;
@@ -101,60 +172,91 @@ function fillForm(values) {
 
 function fillConfigForm(data) {
   const config = data.config;
+  const localConfig = readLocalConfig();
   configForm.elements.app_database_url.value = config.app_database_url || "";
   configForm.elements.llm_base_url.value = config.llm.base_url || "";
   configForm.elements.llm_model.value = config.llm.model || "";
   configForm.elements.llm_api_key.value = "";
-  configForm.elements.llm_api_key.placeholder = config.llm.api_key_configured
-    ? "已保存，留空保持不变"
-    : "未配置";
+  configForm.elements.llm_api_key.placeholder = localConfig.llm?.api_key
+    ? "已保存在本浏览器，留空保持不变"
+    : config.llm.api_key_configured
+      ? "服务器默认已配置，留空使用默认值"
+      : "未配置";
   configForm.elements.database_url.value = "";
-  configForm.elements.database_url.placeholder = config.database.configured
-    ? "已保存，留空保持不变"
-    : "未配置";
+  configForm.elements.database_url.placeholder = localConfig.database?.url
+    ? "已保存在本浏览器，留空保持不变"
+    : config.database.configured
+      ? "服务器默认已配置，留空使用默认值"
+      : "未配置";
   configForm.elements.pending_output_dir.value = config.publish.pending_output_dir || "";
   configForm.elements.wechat_app_id.value = config.wechat.app_id || "";
   configForm.elements.wechat_app_secret.value = "";
-  configForm.elements.wechat_app_secret.placeholder = config.wechat.app_secret_configured
-    ? "已保存，留空保持不变"
-    : "未配置";
+  configForm.elements.wechat_app_secret.placeholder = localConfig.wechat?.app_secret
+    ? "已保存在本浏览器，留空保持不变"
+    : config.wechat.app_secret_configured
+      ? "服务器默认已配置，留空使用默认值"
+      : "未配置";
   configForm.elements.wechat_auto_publish.checked = Boolean(config.wechat.auto_publish);
   configForm.elements.wechat_enable_mass_send.checked = Boolean(config.wechat.enable_mass_send);
-  configForm.elements.scheduler_enabled.checked = Boolean(config.scheduler.enabled);
-  configForm.elements.scheduler_interval_minutes.value = config.scheduler.interval_minutes || 240;
 
   const overrides = Object.entries(data.env_overrides || {})
     .filter(([, enabled]) => enabled)
     .map(([key]) => overrideLabels[key] || key);
-  configNote.textContent = overrides.length
-    ? `环境变量正在接管：${overrides.join("、")}`
-    : "";
+  const notes = [];
+  if (Object.keys(localConfig).length) {
+    notes.push("设置已保存在当前浏览器");
+  } else {
+    notes.push("设置将保存在当前浏览器");
+  }
+  if (overrides.length) {
+    notes.push(`环境变量正在接管：${overrides.join("、")}`);
+  }
+  configNote.textContent = notes.join("；");
 }
 
-function configPayload() {
+function configPayload(existing = {}) {
   const data = Object.fromEntries(new FormData(configForm).entries());
   return {
     app_database_url: data.app_database_url,
     llm: {
       base_url: data.llm_base_url,
       model: data.llm_model,
-      api_key: data.llm_api_key,
+      api_key: data.llm_api_key || existing.llm?.api_key || "",
     },
     database: {
-      url: data.database_url,
+      url: data.database_url || existing.database?.url || "",
     },
     publish: {
       pending_output_dir: data.pending_output_dir,
     },
     wechat: {
       app_id: data.wechat_app_id,
-      app_secret: data.wechat_app_secret,
+      app_secret: data.wechat_app_secret || existing.wechat?.app_secret || "",
       auto_publish: configForm.elements.wechat_auto_publish.checked,
       enable_mass_send: configForm.elements.wechat_enable_mass_send.checked,
     },
-    scheduler: {
-      enabled: configForm.elements.scheduler_enabled.checked,
-      interval_minutes: Number(data.scheduler_interval_minutes || 240),
+  };
+}
+
+function compactConfig(config) {
+  return {
+    app_database_url: config.app_database_url,
+    llm: {
+      base_url: config.llm.base_url,
+      model: config.llm.model,
+      ...(config.llm.api_key ? { api_key: config.llm.api_key } : {}),
+    },
+    database: {
+      ...(config.database.url ? { url: config.database.url } : {}),
+    },
+    publish: {
+      pending_output_dir: config.publish.pending_output_dir,
+    },
+    wechat: {
+      app_id: config.wechat.app_id,
+      ...(config.wechat.app_secret ? { app_secret: config.wechat.app_secret } : {}),
+      auto_publish: config.wechat.auto_publish,
+      enable_mass_send: config.wechat.enable_mass_send,
     },
   };
 }
@@ -326,7 +428,7 @@ function renderArticles(articles, source) {
 }
 
 async function publishArticles(articleIds, mode = "file") {
-  const body = { article_ids: articleIds };
+  const body = { article_ids: articleIds, config: requestConfig() };
   if (mode) {
     body.mode = mode;
   }
@@ -345,21 +447,29 @@ async function publishArticles(articleIds, mode = "file") {
 }
 
 async function loadStatus() {
-  const payload = await requestJson("/api/config/status");
-  const data = payload.data;
+  if (!defaultConfigData) {
+    await loadConfigDefaults();
+  }
+  const data = effectiveConfigData().config;
   const chips = [
-    data.llm.configured ? "LLM 已配置" : "模板模式",
+    data.llm.api_key_configured ? "LLM 已配置" : "模板模式",
     data.database.configured ? "外部数据库已配置" : "未配置外部数据库",
-    data.wechat.configured ? "公众号已配置" : "公众号文件草稿",
-    data.wechat.auto_publish_enabled ? "公众号自动发布开启" : "公众号发布需手动触发",
+    data.wechat.app_id && data.wechat.app_secret_configured ? "公众号已配置" : "公众号文件草稿",
+    data.wechat.auto_publish ? "公众号自动发布开启" : "公众号发布需手动触发",
     data.scheduler.enabled ? "定时任务开启" : "手动任务",
   ];
   statusRow.innerHTML = chips.map((chip) => `<span>${chip}</span>`).join("");
 }
 
-async function loadConfig() {
+async function loadConfigDefaults() {
   const payload = await requestJson("/api/config");
-  fillConfigForm(payload.data);
+  defaultConfigData = payload.data;
+  return payload.data;
+}
+
+async function loadConfig() {
+  await loadConfigDefaults();
+  fillConfigForm(effectiveConfigData());
 }
 
 async function loadTasks() {
@@ -398,7 +508,7 @@ form.addEventListener("submit", async (event) => {
   try {
     const payload = await requestJson("/api/materials/generate", {
       method: "POST",
-      body: JSON.stringify({ material }),
+      body: JSON.stringify({ material, config: requestConfig() }),
     });
     renderArticles(payload.articles, payload.source);
     showToast("稿件已生成");
@@ -419,7 +529,7 @@ pullRecentButton.addEventListener("click", async () => {
   try {
     const payload = await requestJson("/api/materials/pull_recent", {
       method: "POST",
-      body: JSON.stringify({ limit: 5 }),
+      body: JSON.stringify({ limit: 5, config: requestConfig() }),
     });
     if (!payload.materials.length) {
       showToast("暂无最近数据");
@@ -467,14 +577,11 @@ configForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   setConfigSaving(true);
   try {
-    const payload = await requestJson("/api/config", {
-      method: "POST",
-      body: JSON.stringify({ config: configPayload() }),
-    });
-    fillConfigForm(payload.data);
+    const nextConfig = compactConfig(configPayload(readLocalConfig()));
+    writeLocalConfig(nextConfig);
+    fillConfigForm(effectiveConfigData());
     await loadStatus();
-    await loadTasks();
-    showToast("设置已保存");
+    showToast("设置已保存在本浏览器");
   } catch (error) {
     showToast(error.message);
   } finally {

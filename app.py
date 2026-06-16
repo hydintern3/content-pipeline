@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
-from threading import Lock
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request
 
-from pipeline.config import build_config, default_json_config, load_json_config, save_json_config, resolve_config_path
+from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
 from pipeline.database import create_app_engine, create_session_factory, init_database, session_scope
 from pipeline.generation import generate_drafts
 from pipeline.ingestion import fetch_recent_materials
@@ -36,7 +35,6 @@ engine = create_app_engine(config)
 init_database(engine)
 SessionLocal = create_session_factory(engine)
 scheduler = start_scheduler(config, SessionLocal)
-CONFIG_LOCK = Lock()
 
 app = Flask(__name__)
 
@@ -66,7 +64,7 @@ def env_overrides() -> dict[str, bool]:
     }
 
 
-def editable_config_payload() -> dict[str, Any]:
+def default_config_payload() -> dict[str, Any]:
     saved_config = load_json_config()
     defaults = default_json_config()
 
@@ -74,7 +72,6 @@ def editable_config_payload() -> dict[str, Any]:
         return nested_value(saved_config, path, nested_value(defaults, path, default))
 
     return {
-        "config_path": str(resolve_config_path()),
         "env_overrides": env_overrides(),
         "config": {
             "app_database_url": saved("app_database_url", "sqlite:///data/pipeline.db"),
@@ -195,25 +192,12 @@ def normalize_config_update(payload: dict[str, Any], existing: dict[str, Any]) -
     return updated
 
 
-def reload_runtime_config() -> None:
-    global config, engine, SessionLocal, scheduler
-
-    next_config = build_config()
-    next_engine = create_app_engine(next_config)
-    init_database(next_engine)
-    next_session_local = create_session_factory(next_engine)
-    next_scheduler = start_scheduler(next_config, next_session_local)
-
-    old_engine = engine
-    old_scheduler = scheduler
-    config = next_config
-    engine = next_engine
-    SessionLocal = next_session_local
-    scheduler = next_scheduler
-
-    if old_scheduler:
-        old_scheduler.shutdown(wait=False)
-    old_engine.dispose()
+def config_for_request(payload: dict[str, Any]):
+    personal_config = payload.get("config")
+    if not isinstance(personal_config, dict):
+        return config
+    normalized = normalize_config_update(personal_config, load_json_config())
+    return config_from_dict(normalized)
 
 
 @app.get("/")
@@ -254,25 +238,12 @@ def config_status():
 
 @app.get("/api/config")
 def get_config():
-    with CONFIG_LOCK:
-        return ok({"data": editable_config_payload()})
+    return ok({"data": default_config_payload()})
 
 
 @app.post("/api/config")
-def save_config():
-    payload = request.get_json(silent=True) or {}
-    try:
-        with CONFIG_LOCK:
-            existing = load_json_config()
-            updated = normalize_config_update(payload, existing)
-            save_json_config(updated)
-            reload_runtime_config()
-            return ok({"data": editable_config_payload()})
-    except ValueError as exc:
-        return error(str(exc), 400)
-    except Exception as exc:
-        LOGGER.exception("Config save failed")
-        return error(f"配置保存失败：{exc}", 500)
+def preview_config():
+    return ok({"data": default_config_payload()})
 
 
 @app.post("/api/materials/generate")
@@ -280,7 +251,8 @@ def generate_from_material():
     try:
         payload = request.get_json(silent=True) or {}
         material_input = normalize_material(payload.get("material") or payload)
-        source, drafts = generate_drafts(material_input, config)
+        request_config = config_for_request(payload)
+        source, drafts = generate_drafts(material_input, request_config)
         with session_scope(SessionLocal) as session:
             material = create_material(session, material_input)
             articles = create_articles(session, material, drafts)
@@ -303,7 +275,8 @@ def pull_recent_materials():
     payload = request.get_json(silent=True) or {}
     limit = int(payload.get("limit") or 5)
     try:
-        materials = fetch_recent_materials(config, limit=limit)
+        request_config = config_for_request(payload)
+        materials = fetch_recent_materials(request_config, limit=limit)
         with session_scope(SessionLocal) as session:
             persisted = [create_material(session, material) for material in materials]
             return ok({"materials": [material_payload(material) for material in persisted]})
@@ -315,6 +288,7 @@ def pull_recent_materials():
 @app.post("/api/publish")
 def publish():
     payload = request.get_json(silent=True) or {}
+    request_config = config_for_request(payload)
     article_ids = payload.get("article_ids") or payload.get("article_id")
     requested_mode = (payload.get("mode") or "").strip() or None
     if isinstance(article_ids, int):
@@ -328,7 +302,7 @@ def publish():
             article = get_article(session, int(raw_article_id))
             if not article:
                 return error(f"文章不存在：{raw_article_id}", 404)
-            task = publish_article(session, article, config, requested_mode=requested_mode)
+            task = publish_article(session, article, request_config, requested_mode=requested_mode)
             tasks.append(task)
         return ok({"tasks": [task_payload(task) for task in tasks]})
 

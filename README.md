@@ -5,7 +5,7 @@
 ## 启动
 
 ```powershell
-cd E:\workspace\work\运营agent\content_pipeline
+cd \content_pipeline
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -17,7 +17,7 @@ python app.py
 
 ## 配置
 
-密钥只在服务端读取。可以使用页面右上角的“设置”保存到 `config.json`，也可以使用 `.env` 或环境变量覆盖。
+密钥只在服务端用于本次请求。可以使用页面右上角的“设置”保存到当前浏览器，也可以使用服务器上的 `config.json`、`.env` 或环境变量作为默认兜底配置。
 
 页面设置会保存：
 
@@ -26,9 +26,10 @@ python app.py
 - 外部素材数据库 URL
 - 待发布目录
 - 公众号 App ID、App Secret、自动发布和群发开关
-- 定时任务开关和间隔
 
-API Key、数据库 URL、公众号 App Secret 不会回显到前端；再次打开设置时留空保存会保留原值。服务器部署后，首次在页面配置完成即可复用；本地部署也会读取已保存的 `config.json`，不用每次重新填写。
+API Key、数据库 URL、公众号 App Secret 不会从服务器配置回显到前端；保存在当前浏览器后，再次打开设置时留空保存会保留本浏览器原值。服务器部署后，每个用户的浏览器各自保存自己的设置，不会互相覆盖服务器 `config.json`。换电脑、换浏览器或清理浏览器数据后需要重新填写。
+
+定时任务仍使用服务器配置，不跟随某个浏览器用户的个人设置。
 
 常用环境变量：
 

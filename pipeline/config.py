@@ -150,9 +150,7 @@ class AppConfig:
         return bool(self.wechat_app_id and self.wechat_app_secret)
 
 
-def build_config() -> AppConfig:
-    load_env_file()
-    config = load_json_config()
+def config_from_dict(config: dict[str, Any]) -> AppConfig:
     data_dir = BASE_DIR / "data"
     default_app_db = f"sqlite:///{(data_dir / 'pipeline.db').as_posix()}"
 
@@ -187,3 +185,8 @@ def build_config() -> AppConfig:
         scheduler_enabled=bool_env("SCHEDULER_ENABLED", config, "scheduler.enabled", False),
         scheduler_interval_minutes=max(5, int(interval or "240")),
     )
+
+
+def build_config() -> AppConfig:
+    load_env_file()
+    return config_from_dict(load_json_config())

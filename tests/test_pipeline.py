@@ -148,7 +148,7 @@ def test_file_publish_records_success_and_output(tmp_path):
       session.close()
 
 
-def test_config_endpoint_preserves_existing_secrets(tmp_path, monkeypatch):
+def test_config_endpoint_hides_server_secrets_and_does_not_persist_user_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
@@ -226,8 +226,85 @@ def test_config_endpoint_preserves_existing_secrets(tmp_path, monkeypatch):
     assert response.status_code == 200
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["llm"]["api_key"] == "saved-api-key"
-    assert saved["llm"]["model"] == "new-model"
+    assert saved["llm"]["model"] == "old-model"
     assert saved["database"]["url"] == "mysql+pymysql://user:password@127.0.0.1:3306/source"
-    assert saved["wechat"]["app_id"] == "wx-new"
+    assert saved["wechat"]["app_id"] == "wx-old"
     assert saved["wechat"]["app_secret"] == "saved-secret"
-    assert saved["wechat"]["auto_publish"] is True
+    assert saved["wechat"]["auto_publish"] is False
+
+
+def test_request_config_uses_browser_config_without_persisting(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_database_url": "sqlite:///data/pipeline.db",
+                "llm": {
+                    "api_key": "server-key",
+                    "base_url": "https://server.example/v1",
+                    "model": "server-model",
+                },
+                "database": {
+                    "url": "",
+                },
+                "publish": {
+                    "pending_output_dir": "data/pending",
+                },
+                "wechat": {
+                    "app_id": "",
+                    "app_secret": "",
+                    "auto_publish": False,
+                    "enable_mass_send": False,
+                },
+                "scheduler": {
+                    "enabled": False,
+                    "interval_minutes": 240,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    request_config = app_module.config_for_request(
+        {
+            "config": {
+                "app_database_url": "sqlite:///data/pipeline.db",
+                "llm": {
+                    "api_key": "browser-key",
+                    "base_url": "https://browser.example/v1",
+                    "model": "browser-model",
+                },
+                "database": {
+                    "url": "mysql+pymysql://browser:secret@127.0.0.1:3306/source",
+                },
+                "publish": {
+                    "pending_output_dir": "data/browser-pending",
+                },
+                "wechat": {
+                    "app_id": "wx-browser",
+                    "app_secret": "browser-secret",
+                    "auto_publish": True,
+                    "enable_mass_send": False,
+                },
+                "scheduler": {
+                    "enabled": False,
+                    "interval_minutes": 30,
+                },
+            }
+        }
+    )
+
+    assert request_config.llm_api_key == "browser-key"
+    assert request_config.llm_base_url == "https://browser.example/v1"
+    assert request_config.llm_model == "browser-model"
+    assert request_config.external_database_url.startswith("mysql+pymysql://browser")
+    assert request_config.wechat_app_id == "wx-browser"
+    assert request_config.wechat_app_secret == "browser-secret"
+    assert request_config.wechat_auto_publish is True
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["llm"]["api_key"] == "server-key"
+    assert saved["llm"]["model"] == "server-model"
