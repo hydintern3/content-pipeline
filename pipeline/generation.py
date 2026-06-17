@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 
 from openai import AsyncOpenAI
@@ -13,39 +14,156 @@ from .schemas import ArticleDraft, MaterialInput
 
 
 LOGGER = logging.getLogger(__name__)
-LLM_TIMEOUT_SECONDS = 45
+LLM_TIMEOUT_SECONDS = int(os.getenv("CONTENT_LLM_TIMEOUT_SECONDS", "120"))
+LLM_MAX_RETRIES = int(os.getenv("CONTENT_LLM_MAX_RETRIES", "1"))
+
+PLATFORM_FORMATS = {
+    "xiaohongshu": "text",
+    "zhihu": "markdown",
+    "official_account": "html",
+    "toutiao": "markdown",
+    "shipinhao": "script",
+}
+
+PLATFORM_RULES = {
+    "official_account": """
+公众号：
+- 定位：B 端权威长文，适合行业解读、完整教程、客户案例、工具介绍。
+- 文风：专业、沉稳、客观，段落式表达为主，可少量分点，但不要列表堆砌。
+- 篇幅：默认 800-1500 字；如果素材很短，可生成精简版，但逻辑必须完整。
+- 标题：平实但有吸引力，拒绝标题党、夸大承诺和极限词。
+- 正文：自然植入产品/小程序价值，避免硬广、强制引导、二维码、联系方式和诱导性话术。
+- 输出格式：基础 HTML，仅使用 h2、h3、p、ul、li、strong 等安全标签。
+""",
+    "xiaohongshu": """
+小红书：
+- 定位：个人 IP 笔记，像资深选址/招商/职场顾问在分享经验。
+- 文风：第一人称、接地气、有实战感，拒绝官方腔和教科书口吻。
+- 篇幅：默认 300-700 字。
+- 开头：优先用场景、痛点、避坑、实测经历切入，不要万能开场。
+- 内容：少量商务风 emoji 可用，但不要花哨；产品植入以“工具分享/自用实测”形式呈现。
+- 合规：不写硬广、二维码、联系方式、夸张承诺和明显导流。
+- 结尾：自然引导收藏、评论或私信领取资料。
+- 输出：正文末尾生成 3-6 个垂直精准话题标签。
+""",
+    "zhihu": """
+知乎：
+- 定位：问答回答或专栏长文，默认以“回答一个具体问题”的方式输出。
+- 文风：理性、客观、专业，偏行业分析、问题解答和深度观点。
+- 篇幅：问答默认 600-900 字；素材足够时可接近 1000 字。
+- 逻辑：先界定问题，再给判断和依据，最后给可执行建议。
+- 合规：弱营销，产品植入要隐藏在解决方案里，避免夸张话术和广告感。
+- 输出格式：Markdown。
+""",
+    "toutiao": """
+今日头条：
+- 定位：综合信息流内容，兼顾专业和可读性。
+- 文风：通俗直白、干货导向，节奏明快，开篇直接给重点。
+- 篇幅：默认 500-1000 字。
+- 标题：适度吸睛，但拒绝低俗、夸大、标题党。
+- 正文：段落拆分合理，重点内容可用 Markdown 加粗，避免虚假宣传和广告违规词。
+- 输出格式：Markdown。
+""",
+    "shipinhao": """
+视频号：
+- 定位：短视频口播脚本，适配 15-60 秒视频。
+- 文风：短句、上口、可朗读，不写复杂长句。
+- 结构：开头 3 秒给痛点或钩子；中段讲清价值；结尾自然引导了解或收藏。
+- 字数：默认 30 秒脚本，约 120-180 字；如果素材复杂，最多控制在 250 字内。
+- 合规：避免硬广台词、夸大承诺、诱导性话术和违规词。
+- 输出格式：script，按“开场 / 主体 / 结尾”分段。
+""",
+}
+
+ANTI_AI_RULES = """
+去 AI 化和防模板化硬性要求：
+- 禁止使用“总之、综上所述、在这个快节奏的时代、赋能、打造闭环、降本增效新范式、开启新篇章”等明显 AI 套话。
+- 禁止统一开头、统一结尾、句式重复、机械分点、排比堆砌。
+- 不要把每个平台都写成同一套“开头-过渡-正文-结尾”模板。
+- 同一素材在不同平台必须换切入角度，可从痛点、场景、案例、经验、避坑、教程中选择。
+- 优先自然段落行文，只有平台适合时才使用编号列表。
+- 用词正式但不晦涩，避免空泛抒情，多写具体业务判断、实操建议和读者能采取的下一步。
+"""
+
+B2B_CONTEXT_RULES = """
+B 端业务语境：
+- 内容面向物业、企业主、行政、HR、招商负责人、园区/楼宇运营人员。
+- 适用内容包括招商、企业选址、办公租赁、企业招聘、职场干货、小程序功能教程、行业解读、避坑指南、客户案例。
+- 专业度要贴近商业地产、物业管理、办公租赁、企业服务和招聘场景。
+- 可以使用“招商线索、楼宇空置、企业选址、办公租赁、企业服务、物业管理、供需信息、转化链路、运营素材”等行业表达。
+- 不要编造具体数据、客户名称、政策结论或平台规则；素材没有的信息只能保守表达。
+"""
+
+COMPLIANCE_RULES = """
+合规和风控要求：
+- 规避广告法极限词、夸大承诺、虚假宣传、诱导转发、强制导流、联系方式和二维码描述。
+- 不写“最、第一、唯一、保证、必然、稳赚、官方指定”等高风险表达。
+- 如果素材中出现联系方式、二维码、强导流内容，要改写为“可在对应入口了解”这类温和表达。
+- 输出应是可进入人工小幅润色的初稿，不要在正文外额外解释风险。
+"""
 
 
 def build_system_prompt() -> str:
-    return (
-        "你是资深中文内容运营专家。请把同一份素材改写成多个平台适配稿。"
-        "必须严格输出 JSON 对象，不要 Markdown 代码块，不要解释。"
-        "每个平台对象包含 title、content、format 三个字段。"
-    )
+    return f"""你是资深 B 端新媒体内容运营专家，熟悉商业地产、物业管理、办公租赁、企业服务、招聘和小程序运营。
+
+你的任务是把同一份业务素材，改写为多个平台可直接进入人工微调的文案初稿。
+
+{ANTI_AI_RULES}
+
+{B2B_CONTEXT_RULES}
+
+{COMPLIANCE_RULES}
+
+严格输出 JSON 对象，不要 Markdown 代码块，不要解释，不要输出请求的平台之外的内容。
+每个平台对象必须包含 title、content、format 三个字段。"""
 
 
 def build_user_prompt(material: MaterialInput) -> str:
-    platforms = ", ".join(material.target_platforms)
+    platforms = material.target_platforms
     keywords = ", ".join(material.keywords) or "无"
-    return f"""请基于素材生成平台文案。
+    platform_rules = "\n".join(
+        f"## {platform}\n{PLATFORM_RULES.get(platform, '按该平台常见内容生态生成。').strip()}"
+        for platform in platforms
+    )
+    example_items = ",\n  ".join(
+        f'"{platform}": {{"title": "...", "content": "...", "format": "{PLATFORM_FORMATS.get(platform, "text")}"}}'
+        for platform in platforms
+    )
 
-目标平台：{platforms}
-标题提示：{material.title_hint}
+    return f"""请基于以下素材生成平台文案。
+
+目标平台：{", ".join(platforms)}
+标题/选题提示：{material.title_hint}
 关键词：{keywords}
 素材正文：
 {material.raw_content}
 
-平台要求：
-- xiaohongshu：标题吸睛，正文轻盈，允许 emoji 和话题标签，适合复制到小红书。
-- zhihu：结构理性，弱营销，适合回答或专栏摘要，可用 Markdown。
-- official_account：适合微信公众号草稿，输出基础 HTML，避免复杂样式。
+平台专属规则：
+{platform_rules}
+
+生成要求：
+- 每个平台必须独立构思标题、开头、结构和表达方式，不要简单复用同一段内容。
+- 标题和正文都要贴合对应平台的阅读习惯、排版习惯和流量逻辑。
+- 如果素材偏产品或工具介绍，必须自然植入，不能写成硬广。
+- 如果素材信息不足，保持克制，不要编造案例、数据、政策或用户反馈。
+- 输出字段 format 必须使用示例中的格式值。
 
 返回 JSON 示例：
 {{
-  "xiaohongshu": {{"title": "...", "content": "...", "format": "text"}},
-  "zhihu": {{"title": "...", "content": "...", "format": "markdown"}},
-  "official_account": {{"title": "...", "content": "...", "format": "html"}}
+  {example_items}
 }}"""
+
+
+def material_for_platform(material: MaterialInput, platform: str) -> MaterialInput:
+    return MaterialInput(
+        title_hint=material.title_hint,
+        raw_content=material.raw_content,
+        keywords=material.keywords,
+        target_platforms=[platform],
+        image_paths=material.image_paths,
+        source_type=material.source_type,
+        source_ref=material.source_ref,
+    )
 
 
 def parse_llm_json(raw_text: str, platforms: list[str]) -> dict[str, ArticleDraft]:
@@ -65,7 +183,7 @@ def parse_llm_json(raw_text: str, platforms: list[str]) -> dict[str, ArticleDraf
             raise ValueError(f"大模型返回缺少 {platform}")
         title = str(item.get("title") or "").strip()
         content = str(item.get("content") or "").strip()
-        content_format = str(item.get("format") or "text").strip()
+        content_format = str(item.get("format") or PLATFORM_FORMATS.get(platform, "text")).strip()
         if not title or not content:
             raise ValueError(f"大模型返回的 {platform} 内容不完整")
         drafts[platform] = ArticleDraft(platform, title, content, content_format)
@@ -77,6 +195,7 @@ async def generate_with_llm(material: MaterialInput, config: AppConfig) -> dict[
         api_key=config.llm_api_key,
         base_url=config.llm_base_url,
         timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=LLM_MAX_RETRIES,
     )
     response = await client.chat.completions.create(
         model=config.llm_model,
@@ -85,21 +204,57 @@ async def generate_with_llm(material: MaterialInput, config: AppConfig) -> dict[
             {"role": "user", "content": build_user_prompt(material)},
         ],
         response_format={"type": "json_object"},
-        temperature=0.75,
+        temperature=0.82,
     )
     raw_text = response.choices[0].message.content or ""
     return parse_llm_json(raw_text, material.target_platforms)
 
 
+async def generate_platform_with_llm(
+    client: AsyncOpenAI,
+    material: MaterialInput,
+    config: AppConfig,
+    platform: str,
+) -> ArticleDraft:
+    platform_material = material_for_platform(material, platform)
+    response = await client.chat.completions.create(
+        model=config.llm_model,
+        messages=[
+            {"role": "system", "content": build_system_prompt()},
+            {"role": "user", "content": build_user_prompt(platform_material)},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.82,
+    )
+    raw_text = response.choices[0].message.content or ""
+    return parse_llm_json(raw_text, [platform])[platform]
+
+
+async def generate_each_platform_with_llm(material: MaterialInput, config: AppConfig) -> dict[str, ArticleDraft]:
+    client = AsyncOpenAI(
+        api_key=config.llm_api_key,
+        base_url=config.llm_base_url,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=LLM_MAX_RETRIES,
+    )
+    drafts: dict[str, ArticleDraft] = {}
+    for platform in material.target_platforms:
+        try:
+            drafts[platform] = await generate_platform_with_llm(client, material, config, platform)
+        except Exception as exc:
+            LOGGER.exception("LLM generation failed for %s; using fallback template: %s", platform, exc)
+            drafts[platform] = fallback_draft(material, platform)
+    return drafts
+
+
 def generate_drafts(material: MaterialInput, config: AppConfig) -> tuple[str, dict[str, ArticleDraft]]:
     if config.has_llm:
         try:
-            return "llm", asyncio.run(generate_with_llm(material, config))
-        except Exception:
-            LOGGER.exception("LLM generation failed; using fallback templates")
+            return "llm", asyncio.run(generate_each_platform_with_llm(material, config))
+        except Exception as exc:
+            LOGGER.exception("LLM generation failed after retries; using fallback templates: %s", exc)
 
     return (
         "fallback_template",
         {platform: fallback_draft(material, platform) for platform in material.target_platforms},
     )
-

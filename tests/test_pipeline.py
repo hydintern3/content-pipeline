@@ -9,8 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pipeline.config import AppConfig
+from pipeline.batch import create_batch_job, parse_batch_file
+from pipeline.compliance import check_text
 from pipeline.database import create_session_factory, init_database
-from pipeline.generation import generate_drafts
+from pipeline.image_processing import process_image
+from pipeline.generation import (
+    build_system_prompt,
+    build_user_prompt,
+    generate_drafts,
+    material_for_platform,
+)
 from pipeline.publishers import (
     WECHAT_TITLE_MAX_BYTES,
     choose_publish_mode,
@@ -59,6 +67,69 @@ def test_normalize_material_accepts_string_lists():
     assert material.image_paths == ["a.png", "b.png"]
 
 
+def test_normalize_material_defaults_to_all_five_platforms():
+    material = normalize_material(
+        {
+            "title_hint": "B2B topic",
+            "raw_content": "Source material",
+        }
+    )
+
+    assert material.target_platforms == [
+        "xiaohongshu",
+        "zhihu",
+        "official_account",
+        "toutiao",
+        "shipinhao",
+    ]
+
+
+def test_generation_prompts_include_task_rules():
+    material = normalize_material(
+        {
+            "title_hint": "Office leasing update",
+            "raw_content": "Useful material for office leasing operators.",
+            "keywords": ["招商", "办公租赁"],
+            "target_platforms": ["official_account", "xiaohongshu", "toutiao", "shipinhao"],
+        }
+    )
+
+    system_prompt = build_system_prompt()
+    user_prompt = build_user_prompt(material)
+
+    assert "去 AI 化" in system_prompt
+    assert "B 端" in system_prompt
+    assert "广告法极限词" in system_prompt
+    assert "公众号" in user_prompt
+    assert "小红书" in user_prompt
+    assert "今日头条" in user_prompt
+    assert "视频号" in user_prompt
+    assert '"shipinhao"' in user_prompt
+
+
+def test_material_for_platform_keeps_source_fields():
+    material = normalize_material(
+        {
+            "title_hint": "Topic",
+            "raw_content": "Content",
+            "keywords": ["招商"],
+            "target_platforms": ["official_account", "toutiao"],
+            "image_paths": ["cover.jpg"],
+            "source_type": "manual",
+            "source_ref": "row-1",
+        }
+    )
+
+    platform_material = material_for_platform(material, "toutiao")
+
+    assert platform_material.target_platforms == ["toutiao"]
+    assert platform_material.title_hint == material.title_hint
+    assert platform_material.raw_content == material.raw_content
+    assert platform_material.keywords == material.keywords
+    assert platform_material.image_paths == material.image_paths
+    assert platform_material.source_ref == "row-1"
+
+
 def test_generate_drafts_uses_fallback_without_llm(tmp_path):
     config = make_config(tmp_path)
     material = normalize_material(
@@ -74,6 +145,24 @@ def test_generate_drafts_uses_fallback_without_llm(tmp_path):
     assert source == "fallback_template"
     assert set(drafts) == {"xiaohongshu", "zhihu", "official_account"}
     assert drafts["official_account"].content_format == "html"
+
+
+def test_generate_drafts_supports_new_platform_fallbacks(tmp_path):
+    config = make_config(tmp_path)
+    material = normalize_material(
+        {
+            "title_hint": "Business update",
+            "raw_content": "A useful source material for the operations team.",
+            "target_platforms": ["toutiao", "shipinhao"],
+        }
+    )
+
+    source, drafts = generate_drafts(material, config)
+
+    assert source == "fallback_template"
+    assert set(drafts) == {"toutiao", "shipinhao"}
+    assert drafts["toutiao"].content_format == "markdown"
+    assert drafts["shipinhao"].content_format == "script"
 
 
 def test_wechat_safe_title_trims_utf8_bytes():
@@ -308,3 +397,78 @@ def test_request_config_uses_browser_config_without_persisting(tmp_path, monkeyp
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["llm"]["api_key"] == "server-key"
     assert saved["llm"]["model"] == "server-model"
+
+
+def test_root_returns_frontend_dev_hint_when_dist_is_missing(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert "Frontend build not found" in response.get_json()["message"]
+
+
+def test_unknown_api_route_returns_404(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+
+    response = client.get("/api/not-found")
+
+    assert response.status_code == 404
+    assert response.get_json()["success"] is False
+
+
+def test_compliance_checker_flags_sensitive_terms():
+    result = check_text("这是唯一保证有效的方案，总之建议立即扫码了解", "toutiao")
+
+    assert result["status"] == "high_risk"
+    assert result["risk_count"] >= 3
+
+
+def test_parse_batch_csv_and_create_job(tmp_path):
+    csv_content = "标题,素材正文,关键词,目标平台\n选题A,正文A,招商,头条\n".encode("utf-8-sig")
+    materials = parse_batch_file("batch.csv", csv_content)
+
+    assert len(materials) == 1
+    assert materials[0].title_hint == "选题A"
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    init_database(engine)
+    session_factory = create_session_factory(engine)
+    session = session_factory()
+    try:
+        job = create_batch_job(session, "batch.csv", materials)
+        session.commit()
+        assert job.total_count == 1
+        assert job.items[0].title_hint == "选题A"
+    finally:
+        session.close()
+
+
+def test_process_image_creates_platform_variants(tmp_path):
+    try:
+        from PIL import Image
+    except ImportError:
+        return
+
+    source = tmp_path / "source.jpg"
+    Image.new("RGB", (1200, 800), color=(120, 160, 200)).save(source)
+
+    variants = process_image(source, tmp_path / "out", "测试选题", ["official_account", "xiaohongshu"])
+
+    assert variants
+    assert {item["platform"] for item in variants} == {"official_account", "xiaohongshu"}
+    assert all(Path(item["output_path"]).exists() for item in variants)
+    assert all(item["file_size"] <= 2 * 1024 * 1024 for item in variants)

@@ -19,20 +19,19 @@ def keyword_tags(material: MaterialInput, defaults: list[str]) -> list[str]:
 
 
 def xiaohongshu_fallback(material: MaterialInput) -> ArticleDraft:
-    tags = " ".join(f"#{tag}" for tag in keyword_tags(material, ["运营工具", "职场效率", "商业增长"]))
-    title = f"{material.title_hint}｜值得收藏"
+    tags = " ".join(f"#{tag}" for tag in keyword_tags(material, ["选址避坑", "招商运营", "企业服务"])[:6])
+    title = f"{material.title_hint}，这个细节建议先看"
     content = "\n".join(
         [
-            f"🔥 {material.title_hint}",
+            f"最近整理素材时，我发现一个挺适合运营、招商和办公选址场景的信息：{material.title_hint}。",
             "",
-            "最近整理到一个很适合运营/招商/职场人看的信息：",
             compact_text(material.raw_content, 260),
             "",
-            "✅ 适合谁看",
-            "需要快速理解业务机会、企业信息或内容素材的人。",
+            "我的判断是，先别急着把它当成一条普通消息发出去。更好的处理方式，是把里面真正能帮用户省时间、少踩坑的点拎出来。",
             "",
-            "📌 可以怎么用",
-            "先看核心信息，再结合自己的场景判断是否值得跟进。",
+            "如果你平时要做企业服务、楼宇招商、办公租赁或招聘相关内容，这类素材可以重点看三个地方：信息是否真实、适合谁看、看完之后能做什么。",
+            "",
+            "发布前建议再补一张清晰配图，语气保持像经验分享，不要写成硬广。",
             "",
             tags,
         ]
@@ -41,21 +40,24 @@ def xiaohongshu_fallback(material: MaterialInput) -> ArticleDraft:
 
 
 def zhihu_fallback(material: MaterialInput) -> ArticleDraft:
-    title = f"如何看待「{material.title_hint}」？"
+    title = f"如何看待「{material.title_hint}」这类信息对 B 端运营的价值？"
     content = "\n".join(
         [
-            f"问题：如何看待「{material.title_hint}」？",
+            f"# {title}",
             "",
-            "答：可以从信息价值和实际应用两个层面来看。",
+            "这个问题不能只看信息本身，要看它能不能帮助业务人员更快做判断。",
             "",
-            "一、核心信息",
-            material.raw_content,
+            "从素材来看，核心信息是：",
             "",
-            "二、为什么值得关注",
-            "这类内容的价值不在于单点信息本身，而在于它能帮助运营、招商或业务人员更快形成判断。",
+            compact_text(material.raw_content, 420),
             "",
-            "三、行动建议",
-            "建议先核验关键事实，再根据目标用户、地域、行业和时效性决定是否发布或跟进。",
+            "对招商、物业、企业服务或招聘运营来说，这类内容的价值通常有三点。",
+            "",
+            "第一，它可以降低用户理解成本。B 端用户不太需要情绪化表达，更关心信息是否清楚、是否可信、是否能辅助决策。",
+            "",
+            "第二，它可以沉淀成可复用的内容资产。同一份素材可以拆成公众号长文、小红书笔记、头条干货和短视频脚本。",
+            "",
+            "第三，它适合和真实业务入口结合，但表达上要克制。不要急着导流，先把问题讲清楚，再给出温和的下一步建议。",
         ]
     )
     return ArticleDraft("zhihu", title, content, "markdown")
@@ -64,16 +66,60 @@ def zhihu_fallback(material: MaterialInput) -> ArticleDraft:
 def official_account_fallback(material: MaterialInput) -> ArticleDraft:
     title = material.title_hint
     escaped_title = html.escape(material.title_hint)
+    escaped_body = html.escape(material.raw_content)
     paragraphs = [
         f"<h2>{escaped_title}</h2>",
-        "<p>今天这条信息值得运营团队重点关注。</p>",
-        f"<p>{html.escape(material.raw_content)}</p>",
-        "<h3>为什么重要</h3>",
-        "<p>它可以帮助团队把零散素材转化为可阅读、可分发、可沉淀的内容资产。</p>",
-        "<h3>下一步建议</h3>",
-        "<p>发布前建议补充真实案例、配图和明确的行动入口，提升读者信任感。</p>",
+        "<p>这是一条值得运营团队进一步整理的业务素材。它适合从信息价值、适用人群和后续动作三个角度展开，而不是简单转述。</p>",
+        f"<p>{escaped_body}</p>",
+        "<h3>为什么值得关注</h3>",
+        "<p>B 端内容的重点不在于热闹，而在于帮助读者更快判断：这条信息和我的业务有没有关系，是否值得进一步了解。</p>",
+        "<h3>可以怎么使用</h3>",
+        "<p>发布前建议补充真实场景、配图和明确但克制的行动入口，让内容既能提供信息，也能自然承接后续咨询。</p>",
     ]
     return ArticleDraft("official_account", title, "\n".join(paragraphs), "html")
+
+
+def toutiao_fallback(material: MaterialInput) -> ArticleDraft:
+    title = f"{material.title_hint}：这几个信息点值得运营人员关注"
+    content = "\n".join(
+        [
+            f"# {title}",
+            "",
+            "对 B 端运营来说，一条素材能不能发，关键不在于标题是否热闹，而在于信息是否清楚、读者是否看得懂、看完是否知道下一步。",
+            "",
+            "**核心信息：**",
+            "",
+            compact_text(material.raw_content, 360),
+            "",
+            "**可以提炼的价值：**",
+            "",
+            "1. 帮助招商、物业或企业服务人员快速判断线索价值。",
+            "2. 适合改写成不同平台内容，覆盖图文、问答和短视频脚本。",
+            "3. 如果补充真实案例或使用场景，内容可信度会更高。",
+            "",
+            "发布前建议再检查一遍敏感词和夸张表达，避免把业务介绍写成硬广。",
+        ]
+    )
+    return ArticleDraft("toutiao", title, content, "markdown")
+
+
+def shipinhao_fallback(material: MaterialInput) -> ArticleDraft:
+    title = f"{material.title_hint}口播脚本"
+    content = "\n".join(
+        [
+            "开场：",
+            f"如果你平时要做招商、办公租赁或企业服务内容，{material.title_hint} 这类素材不要只当消息转发。",
+            "",
+            "主体：",
+            compact_text(material.raw_content, 180),
+            "",
+            "它真正有用的地方，是能帮用户更快判断：这条信息和我的业务有没有关系，值不值得继续了解。",
+            "",
+            "结尾：",
+            "发布前把重点、适用人群和下一步入口讲清楚，比堆一堆宣传词更有效。",
+        ]
+    )
+    return ArticleDraft("shipinhao", title, content, "script")
 
 
 def fallback_draft(material: MaterialInput, platform: str) -> ArticleDraft:
@@ -83,6 +129,10 @@ def fallback_draft(material: MaterialInput, platform: str) -> ArticleDraft:
         return zhihu_fallback(material)
     if platform == "official_account":
         return official_account_fallback(material)
+    if platform == "toutiao":
+        return toutiao_fallback(material)
+    if platform == "shipinhao":
+        return shipinhao_fallback(material)
     raise ValueError(f"不支持的平台：{platform}")
 
 
@@ -90,4 +140,3 @@ def sanitize_filename(value: str, max_chars: int = 40) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|\s]+", "_", value.strip())
     cleaned = cleaned.strip("._")
     return (cleaned or "draft")[:max_chars]
-

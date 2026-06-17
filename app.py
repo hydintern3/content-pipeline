@@ -2,14 +2,26 @@ from __future__ import annotations
 
 import logging
 import os
+import json
+import tempfile
+from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
+from threading import Thread
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request, send_from_directory
+from sqlalchemy import select
+from werkzeug.utils import secure_filename
 
+from pipeline.batch import batch_job_payload, create_batch_job, parse_batch_file, process_batch_job
+from pipeline.compliance import check_articles, check_text
 from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
 from pipeline.database import create_app_engine, create_session_factory, init_database, session_scope
 from pipeline.generation import generate_drafts
+from pipeline.image_processing import process_image
 from pipeline.ingestion import fetch_recent_materials
+from pipeline.models import BatchJob, ImageAsset, ImageVariant
 from pipeline.publishers import publish_article
 from pipeline.repository import (
     article_payload,
@@ -21,7 +33,7 @@ from pipeline.repository import (
     task_payload,
 )
 from pipeline.scheduler import start_scheduler
-from pipeline.schemas import normalize_material
+from pipeline.schemas import normalize_list, normalize_material
 
 
 logging.basicConfig(
@@ -32,11 +44,46 @@ LOGGER = logging.getLogger("content_pipeline")
 
 config = build_config()
 engine = create_app_engine(config)
-init_database(engine)
+try:
+    init_database(engine)
+except Exception:
+    logging.getLogger("content_pipeline").warning(
+        "Database initialization failed for %s; falling back to a temporary writable database.",
+        config.app_database_url,
+    )
+    fallback_db = Path(tempfile.gettempdir()) / "content_pipeline" / "pipeline.db"
+    fallback_db.parent.mkdir(parents=True, exist_ok=True)
+    config = replace(config, app_database_url=f"sqlite:///{fallback_db.as_posix()}")
+    engine = create_app_engine(config)
+    init_database(engine)
 SessionLocal = create_session_factory(engine)
 scheduler = start_scheduler(config, SessionLocal)
 
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+
+
+def writable_runtime_dir(name: str, default_path: Path) -> Path:
+    configured = os.getenv(f"CONTENT_PIPELINE_{name.upper()}_DIR")
+    candidate = Path(configured) if configured else default_path
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return candidate
+    except Exception:
+        fallback = Path(tempfile.gettempdir()) / "content_pipeline" / name
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+UPLOAD_DIR = writable_runtime_dir("uploads", BASE_DIR / "data" / "uploads")
+IMAGE_OUTPUT_DIR = writable_runtime_dir("images", BASE_DIR / "data" / "images")
+
+app = Flask(__name__, static_folder=None)
 
 
 def ok(payload: dict[str, Any]):
@@ -200,9 +247,13 @@ def config_for_request(payload: dict[str, Any]):
     return config_from_dict(normalized)
 
 
-@app.get("/")
-def index():
-    return render_template("index.html")
+def config_from_form() -> Any:
+    raw_config = request.form.get("config") or "{}"
+    try:
+        parsed = json.loads(raw_config)
+    except json.JSONDecodeError:
+        parsed = {}
+    return config_for_request({"config": parsed})
 
 
 @app.get("/api/config/status")
@@ -312,6 +363,171 @@ def tasks():
     limit = int(request.args.get("limit") or 30)
     with session_scope(SessionLocal) as session:
         return ok({"tasks": [task_payload(task) for task in recent_tasks(session, limit=limit)]})
+
+
+@app.post("/api/compliance/check")
+def compliance_check():
+    payload = request.get_json(silent=True) or {}
+    articles = payload.get("articles")
+    if isinstance(articles, list):
+        return ok({"data": check_articles(articles)})
+
+    text = str(payload.get("text") or "")
+    platform = str(payload.get("platform") or "")
+    article_id = payload.get("article_id")
+    if article_id:
+        with session_scope(SessionLocal) as session:
+            article = get_article(session, int(article_id))
+            if not article:
+                return error(f"文章不存在：{article_id}", 404)
+            text = f"{article.title}\n{article.content}"
+            platform = article.platform
+    if not text.strip():
+        return error("缺少待检查文本")
+    return ok({"data": check_text(text, platform)})
+
+
+@app.post("/api/materials/batch_generate")
+def batch_generate():
+    if "file" not in request.files:
+        return error("缺少批量导入文件")
+    uploaded_file = request.files["file"]
+    if not uploaded_file.filename:
+        return error("文件名不能为空")
+
+    try:
+        materials = parse_batch_file(uploaded_file.filename, uploaded_file.read())
+        if not materials:
+            return error("文件中没有可用素材")
+        request_config = config_from_form()
+        with session_scope(SessionLocal) as session:
+            job = create_batch_job(session, uploaded_file.filename, materials)
+            job_id = job.id
+        worker = Thread(
+            target=process_batch_job,
+            args=(job_id, request_config, SessionLocal),
+            daemon=True,
+        )
+        worker.start()
+        with session_scope(SessionLocal) as session:
+            job = session.get(BatchJob, job_id)
+            return ok({"job": batch_job_payload(job, include_items=True)})
+    except Exception as exc:
+        LOGGER.exception("Batch generate failed")
+        return error(f"批量任务创建失败：{exc}", 500)
+
+
+@app.get("/api/batch_jobs")
+def list_batch_jobs():
+    limit = int(request.args.get("limit") or 20)
+    with session_scope(SessionLocal) as session:
+        stmt = select(BatchJob).order_by(BatchJob.created_at.desc()).limit(max(1, min(limit, 100)))
+        jobs = list(session.scalars(stmt).all())
+        return ok({"jobs": [batch_job_payload(job) for job in jobs]})
+
+
+@app.get("/api/batch_jobs/<int:job_id>")
+def get_batch_job(job_id: int):
+    with session_scope(SessionLocal) as session:
+        job = session.get(BatchJob, job_id)
+        if not job:
+            return error(f"批量任务不存在：{job_id}", 404)
+        return ok({"job": batch_job_payload(job, include_items=True)})
+
+
+@app.post("/api/images/process")
+def process_images():
+    files = request.files.getlist("files")
+    if not files:
+        single = request.files.get("file")
+        files = [single] if single else []
+    if not files:
+        return error("缺少图片文件")
+
+    topic = clean_text(request.form.get("topic") or "未命名选题")
+    platforms = normalize_list(request.form.get("platforms")) or [
+        "official_account",
+        "xiaohongshu",
+        "zhihu",
+        "toutiao",
+        "shipinhao",
+    ]
+    upload_day = datetime.now().strftime("%Y-%m-%d")
+    saved_root = UPLOAD_DIR / "images" / upload_day
+    saved_root.mkdir(parents=True, exist_ok=True)
+
+    assets_payload = []
+    try:
+        for uploaded_file in files:
+            if not uploaded_file or not uploaded_file.filename:
+                continue
+            original_name = secure_filename(uploaded_file.filename) or "image.jpg"
+            original_path = saved_root / original_name
+            uploaded_file.save(original_path)
+            variants = process_image(original_path, IMAGE_OUTPUT_DIR, topic, platforms)
+
+            with session_scope(SessionLocal) as session:
+                asset = ImageAsset(
+                    original_name=uploaded_file.filename,
+                    original_path=str(original_path.resolve()),
+                    topic=topic,
+                    status="processed",
+                )
+                session.add(asset)
+                session.flush()
+                variant_models = []
+                for variant in variants:
+                    model = ImageVariant(asset=asset, **variant)
+                    session.add(model)
+                    variant_models.append(model)
+                session.flush()
+                assets_payload.append(
+                    {
+                        "id": asset.id,
+                        "original_name": asset.original_name,
+                        "original_path": asset.original_path,
+                        "topic": asset.topic,
+                        "status": asset.status,
+                        "variants": [
+                            {
+                                "id": variant.id,
+                                "platform": variant.platform,
+                                "usage": variant.usage,
+                                "width": variant.width,
+                                "height": variant.height,
+                                "output_path": variant.output_path,
+                                "file_size": variant.file_size,
+                            }
+                            for variant in variant_models
+                        ],
+                    }
+                )
+        return ok({"assets": assets_payload})
+    except Exception as exc:
+        LOGGER.exception("Image processing failed")
+        return error(f"图片处理失败：{exc}", 500)
+
+
+@app.get("/")
+@app.get("/<path:path>")
+def serve_frontend(path: str = ""):
+    if path.startswith("api/"):
+        return error("API endpoint not found", 404)
+
+    if FRONTEND_DIST.exists():
+        requested_file = FRONTEND_DIST / path
+        if path and requested_file.is_file():
+            return send_from_directory(FRONTEND_DIST, path)
+        return send_from_directory(FRONTEND_DIST, "index.html")
+
+    return ok(
+        {
+            "message": (
+                "Frontend build not found. Run the Vue dev server from content_pipeline/frontend "
+                "during development, or build it into frontend/dist for Flask production serving."
+            )
+        }
+    )
 
 
 if __name__ == "__main__":

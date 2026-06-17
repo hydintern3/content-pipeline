@@ -112,3 +112,20 @@ SCHEDULER_INTERVAL_MINUTES=240
 ```powershell
 pytest
 ```
+
+## Frontend workspace
+
+The operation console has moved to `frontend/` and is built with Vue 3, Vite, TypeScript,
+Element Plus, Pinia, Vue Router, and Axios.
+
+Development:
+
+```powershell
+python app.py
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. In production, run `npm run build`; Flask will serve
+`frontend/dist` automatically when the folder exists.

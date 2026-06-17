@@ -83,11 +83,10 @@ def fetch_recent_materials(config: AppConfig, limit: int = 5) -> list[MaterialIn
                 title_hint=f"{category_label}｜{title}",
                 raw_content=raw_content,
                 keywords=[category_label, "供需信息"],
-                target_platforms=["xiaohongshu", "zhihu", "official_account"],
+                target_platforms=["xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"],
                 image_paths=[],
                 source_type="database",
                 source_ref=str(row["id"]),
             )
         )
     return materials
-

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SUPPORTED_PLATFORMS = {"xiaohongshu", "zhihu", "official_account"}
-DEFAULT_PLATFORMS = ["xiaohongshu", "zhihu", "official_account"]
+SUPPORTED_PLATFORMS = {"xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"}
+DEFAULT_PLATFORMS = ["xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"]
 
 
 @dataclass(frozen=True)
@@ -75,4 +75,3 @@ def loads_list(raw: str) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
-
