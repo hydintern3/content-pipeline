@@ -13,7 +13,7 @@ class ComplianceRule:
     suggestion: str
     platforms: set[str] | None = None
 
-
+# 暂时使用以下规则
 RULES = [
     ComplianceRule("最", "广告法极限词", "high", "避免绝对化表达，可改为“较为”“更适合”等相对表述。"),
     ComplianceRule("第一", "广告法极限词", "high", "如无权威依据，不要使用排名承诺。"),
