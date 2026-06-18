@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SUPPORTED_PLATFORMS = {"xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"}
+SUPPORTED_PLATFORMS = {"xiaohongshu", "zhihu", "zhihu_qa", "official_account", "toutiao", "shipinhao"}
 DEFAULT_PLATFORMS = ["xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"]
 
 

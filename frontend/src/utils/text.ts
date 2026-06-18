@@ -1,3 +1,5 @@
+import type { ComplianceRisk } from "@/types";
+
 export function commaList(value: string): string[] {
   return String(value || "")
     .split(",")
@@ -7,11 +9,11 @@ export function commaList(value: string): string[] {
 
 export function escapeHtml(value: string): string {
   return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 export function sanitizeHtml(value: string): string {
@@ -104,4 +106,87 @@ export function previewHtml(content: string, format: string): string {
     return sanitizeHtml(content);
   }
   return markdownToHtml(content);
+}
+
+export function previewHtmlWithRisks(content: string, format: string, risks: ComplianceRisk[] = []): string {
+  const safeHtml = previewHtml(content, format);
+  const validRisks = risks.filter((risk) => risk.term?.trim());
+  if (!validRisks.length) {
+    return safeHtml;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = safeHtml;
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  let node = walker.nextNode();
+  while (node) {
+    const parent = node.parentElement;
+    if (!parent?.closest("mark, code, pre, script, style")) {
+      textNodes.push(node as Text);
+    }
+    node = walker.nextNode();
+  }
+
+  textNodes.forEach((textNode) => {
+    const text = textNode.nodeValue || "";
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+
+    while (cursor < text.length) {
+      const match = findNextRiskMatch(text, validRisks, cursor);
+      if (!match) {
+        fragment.append(document.createTextNode(text.slice(cursor)));
+        break;
+      }
+
+      if (match.index > cursor) {
+        fragment.append(document.createTextNode(text.slice(cursor, match.index)));
+      }
+
+      const marked = document.createElement("mark");
+      const level = ["high", "medium", "low"].includes(match.risk.level) ? match.risk.level : "low";
+      marked.className = `compliance-risk risk-${level}`;
+      marked.dataset.riskCategory = match.risk.category || "疑似风险";
+      marked.dataset.riskLevel = match.risk.level || "unknown";
+      marked.dataset.riskSuggestion = match.risk.suggestion || "建议人工复核后改写";
+      marked.textContent = text.slice(match.index, match.index + match.risk.term.length);
+      fragment.append(marked);
+      cursor = match.index + match.risk.term.length;
+    }
+
+    textNode.parentNode?.replaceChild(fragment, textNode);
+  });
+
+  return template.innerHTML;
+}
+
+interface RiskMatch {
+  index: number;
+  risk: ComplianceRisk;
+}
+
+function findNextRiskMatch(text: string, risks: ComplianceRisk[], fromIndex: number): RiskMatch | null {
+  let best: { index: number; risk: ComplianceRisk } | null = null;
+  const haystack = text.toLowerCase();
+
+  for (const risk of risks) {
+    const term = risk.term.trim();
+    if (!term) {
+      continue;
+    }
+    const index = haystack.indexOf(term.toLowerCase(), fromIndex);
+    if (index < 0) {
+      continue;
+    }
+    if (
+      !best ||
+      index < best.index ||
+      (index === best.index && term.length > best.risk.term.length)
+    ) {
+      best = { index, risk };
+    }
+  }
+
+  return best;
 }

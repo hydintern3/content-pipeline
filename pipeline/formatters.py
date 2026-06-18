@@ -63,6 +63,34 @@ def zhihu_fallback(material: MaterialInput) -> ArticleDraft:
     return ArticleDraft("zhihu", title, content, "markdown")
 
 
+def zhihu_qa_fallback(material: MaterialInput) -> ArticleDraft:
+    title = f"{material.title_hint}是否值得 B 端运营重点关注？"
+    content = "\n".join(
+        [
+            f"# {title}",
+            "",
+            f"**问题：{title}**",
+            "",
+            "**回答：值得关注，但不建议直接当成宣传稿发布。**",
+            "",
+            "这类素材的价值不在于把信息原样搬运出去，而在于帮助读者更快判断：它和自己的业务、选址、招商、招聘或企业服务场景有没有关系。",
+            "",
+            "从现有素材看，核心信息可以先概括为：",
+            "",
+            compact_text(material.raw_content, 380),
+            "",
+            "为什么要这样处理？原因有三点。",
+            "",
+            "1. B 端读者更看重确定性。标题可以提问题，但正文要尽快给判断，不要绕太久。",
+            "2. 业务素材需要转译。运营人员要把原始信息拆成适用人群、使用场景和下一步动作。",
+            "3. 产品或工具可以出现，但最好放在解决方案里，而不是一上来就推荐。",
+            "",
+            "实际发布前，建议再补充一两个真实场景：比如谁会用到、什么时候用、能减少哪类沟通成本。这样内容会更像一条有判断的问答，而不是一篇泛泛的介绍。",
+        ]
+    )
+    return ArticleDraft("zhihu_qa", title, content, "markdown")
+
+
 def official_account_fallback(material: MaterialInput) -> ArticleDraft:
     title = material.title_hint
     escaped_title = html.escape(material.title_hint)
@@ -127,6 +155,8 @@ def fallback_draft(material: MaterialInput, platform: str) -> ArticleDraft:
         return xiaohongshu_fallback(material)
     if platform == "zhihu":
         return zhihu_fallback(material)
+    if platform == "zhihu_qa":
+        return zhihu_qa_fallback(material)
     if platform == "official_account":
         return official_account_fallback(material)
     if platform == "toutiao":

@@ -22,12 +22,25 @@
         <header>
           <el-tag effect="dark">{{ platformLabels[article.platform] || article.platform }}</el-tag>
           <small>{{ workspace.source === "llm" ? "大模型生成" : "模板兜底" }} · {{ article.format }}</small>
+          <el-tag
+            v-if="articleComplianceResult(article.id)"
+            :type="riskTagType(articleComplianceResult(article.id)?.risk_count || 0)"
+            size="small"
+          >
+            {{ riskTagText(articleComplianceResult(article.id)?.risk_count || 0) }}
+          </el-tag>
         </header>
         <h3>{{ article.title }}</h3>
 
         <el-tabs v-model="modes[article.id]" class="article-tabs">
           <el-tab-pane label="预览" name="preview">
-            <div class="rendered-preview" v-html="previewHtml(article.content, article.format)" />
+            <div
+              class="rendered-preview"
+              v-html="articlePreviewHtml(article)"
+              @pointerleave="hideRiskTooltip"
+              @pointermove="moveRiskTooltip"
+              @pointerover="showRiskTooltip"
+            />
           </el-tab-pane>
           <el-tab-pane label="源码" name="source">
             <pre>{{ article.content }}</pre>
@@ -37,6 +50,9 @@
         <footer>
           <el-button :icon="CopyDocument" @click="copy(article.content)">复制</el-button>
           <el-button :icon="Download" @click="publish([article.id], 'file')">导出</el-button>
+          <el-button :loading="checkingCompliance[article.id]" @click="runCompliance(article)">
+            合规检查
+          </el-button>
           <el-button
             v-if="article.platform === 'official_account'"
             type="primary"
@@ -79,6 +95,28 @@
         <p>{{ workspace.generationErrors[platform] }}</p>
       </article>
     </div>
+
+    <div
+      v-if="riskTooltip.visible"
+      class="risk-tooltip"
+      :class="`risk-tooltip-${riskTooltip.level}`"
+      :style="{ left: `${riskTooltip.x}px`, top: `${riskTooltip.y}px` }"
+    >
+      <div class="risk-tooltip-head">
+        <span>合规风险</span>
+        <strong>{{ riskLevelLabel(riskTooltip.level) }}</strong>
+      </div>
+      <div class="risk-tooltip-body">
+        <p>
+          <span>风险类型</span>
+          {{ riskTooltip.category }}
+        </p>
+        <p>
+          <span>修改建议</span>
+          {{ riskTooltip.suggestion }}
+        </p>
+      </div>
+    </div>
   </el-card>
 </template>
 
@@ -87,28 +125,131 @@ import { computed, reactive, watch } from "vue";
 import { CopyDocument, Download, FolderOpened } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
+import { checkArticleCompliance } from "@/api/client";
 import { platformLabels } from "@/constants";
 import { useWorkspaceStore } from "@/stores/workspace";
-import type { Platform } from "@/types";
-import { previewHtml } from "@/utils/text";
+import type { Article, ComplianceResult, Platform } from "@/types";
+import { previewHtmlWithRisks } from "@/utils/text";
 
 const workspace = useWorkspaceStore();
 const modes = reactive<Record<number, "preview" | "source">>({});
+const complianceByArticle = reactive<Record<number, ComplianceResult>>({});
+const checkingCompliance = reactive<Record<number, boolean>>({});
+const riskTooltip = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  level: "low",
+  category: "",
+  suggestion: "",
+});
 const errorPlatforms = computed(() => Object.keys(workspace.generationErrors) as Platform[]);
 
 watch(
   () => workspace.articles.map((article) => article.id),
   (articleIds) => {
+    const currentIds = new Set(articleIds);
     articleIds.forEach((articleId) => {
       modes[articleId] = modes[articleId] || "preview";
+    });
+    Object.keys(complianceByArticle).forEach((articleId) => {
+      if (!currentIds.has(Number(articleId))) {
+        delete complianceByArticle[Number(articleId)];
+        delete checkingCompliance[Number(articleId)];
+      }
     });
   },
   { immediate: true },
 );
 
+function articleComplianceResult(articleId: number) {
+  return complianceByArticle[articleId];
+}
+
+function articlePreviewHtml(article: Article) {
+  return previewHtmlWithRisks(article.content, article.format, complianceByArticle[article.id]?.risks || []);
+}
+
+function riskTagType(riskCount: number) {
+  return riskCount > 0 ? "danger" : "success";
+}
+
+function riskTagText(riskCount: number) {
+  return riskCount > 0 ? `${riskCount} 个风险` : "合规通过";
+}
+
+function riskLevelLabel(level: string) {
+  const labels: Record<string, string> = {
+    high: "高风险",
+    medium: "中风险",
+    low: "低风险",
+  };
+  return labels[level] || "待复核";
+}
+
+function riskTarget(event: PointerEvent) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+  return target.closest(".compliance-risk") as HTMLElement | null;
+}
+
+function updateTooltipPosition(event: PointerEvent) {
+  const width = 320;
+  const height = 150;
+  riskTooltip.x = Math.min(event.clientX + 16, window.innerWidth - width - 12);
+  riskTooltip.y = Math.min(event.clientY + 18, window.innerHeight - height - 12);
+}
+
+function showRiskTooltip(event: PointerEvent) {
+  const target = riskTarget(event);
+  if (!target) {
+    riskTooltip.visible = false;
+    return;
+  }
+  riskTooltip.visible = true;
+  riskTooltip.level = target.dataset.riskLevel || "low";
+  riskTooltip.category = target.dataset.riskCategory || "疑似风险";
+  riskTooltip.suggestion = target.dataset.riskSuggestion || "建议人工复核后改写";
+  updateTooltipPosition(event);
+}
+
+function moveRiskTooltip(event: PointerEvent) {
+  if (!riskTooltip.visible) {
+    return;
+  }
+  if (!riskTarget(event)) {
+    riskTooltip.visible = false;
+    return;
+  }
+  updateTooltipPosition(event);
+}
+
+function hideRiskTooltip() {
+  riskTooltip.visible = false;
+}
+
 async function copy(content: string) {
   await navigator.clipboard.writeText(content);
   ElMessage.success("已复制");
+}
+
+async function runCompliance(article: Article) {
+  checkingCompliance[article.id] = true;
+  try {
+    const result = await checkArticleCompliance(`${article.title}\n${article.content}`, article.platform);
+    complianceByArticle[article.id] = result;
+    if (result.risk_count > 0) {
+      ElMessage.warning(`发现 ${result.risk_count} 个风险词，已在预览中标记`);
+    } else {
+      ElMessage.success("合规检查通过");
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "合规检查失败");
+  } finally {
+    checkingCompliance[article.id] = false;
+  }
 }
 
 async function publish(articleIds: number[], mode: string) {

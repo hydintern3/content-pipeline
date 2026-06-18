@@ -20,6 +20,7 @@ LLM_MAX_RETRIES = int(os.getenv("CONTENT_LLM_MAX_RETRIES", "1"))
 PLATFORM_FORMATS = {
     "xiaohongshu": "text",
     "zhihu": "markdown",
+    "zhihu_qa": "markdown",
     "official_account": "html",
     "toutiao": "markdown",
     "shipinhao": "script",
@@ -54,6 +55,16 @@ PLATFORM_RULES = {
 - 逻辑：先界定问题，再给判断和依据，最后给可执行建议。
 - 合规：弱营销，产品植入要隐藏在解决方案里，避免夸张话术和广告感。
 - 输出格式：Markdown。
+""",
+    "zhihu_qa": """
+知乎 Q&A：
+- 定位：独立问答式内容，像在知乎回答一个真实业务问题，不写成专栏文章。
+- 标题：必须是问题句，优先使用“如何看待 / 为什么 / 是否值得 / 应该怎么做”这类具体问法。
+- 结构：正文必须按“问题 + 回答”组织；先用 1-2 句话直接回答，再解释原因，最后给可执行建议。
+- 文风：理性、克制、有判断，避免营销腔、鸡汤腔和空泛概念。
+- 篇幅：默认 500-900 字；素材不足时宁可短一点，也不要编造案例、数据或政策结论。
+- 产品植入：只能作为解决问题的工具或场景入口自然出现，不能写成广告推荐。
+- 输出格式：Markdown，可使用二级标题和编号列表，但不要堆砌。
 """,
     "toutiao": """
 今日头条：

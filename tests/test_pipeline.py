@@ -84,13 +84,25 @@ def test_normalize_material_defaults_to_all_five_platforms():
     ]
 
 
+def test_normalize_material_accepts_zhihu_qa_without_defaulting_to_it():
+    material = normalize_material(
+        {
+            "title_hint": "问答选题",
+            "raw_content": "问答素材",
+            "target_platforms": "zhihu_qa",
+        }
+    )
+
+    assert material.target_platforms == ["zhihu_qa"]
+
+
 def test_generation_prompts_include_task_rules():
     material = normalize_material(
         {
             "title_hint": "Office leasing update",
             "raw_content": "Useful material for office leasing operators.",
             "keywords": ["招商", "办公租赁"],
-            "target_platforms": ["official_account", "xiaohongshu", "toutiao", "shipinhao"],
+            "target_platforms": ["official_account", "xiaohongshu", "toutiao", "shipinhao", "zhihu_qa"],
         }
     )
 
@@ -104,7 +116,10 @@ def test_generation_prompts_include_task_rules():
     assert "小红书" in user_prompt
     assert "今日头条" in user_prompt
     assert "视频号" in user_prompt
+    assert "知乎 Q&A" in user_prompt
+    assert "先用 1-2 句话直接回答" in user_prompt
     assert '"shipinhao"' in user_prompt
+    assert '"zhihu_qa"' in user_prompt
 
 
 def test_material_for_platform_keeps_source_fields():
@@ -163,6 +178,24 @@ def test_generate_drafts_supports_new_platform_fallbacks(tmp_path):
     assert set(drafts) == {"toutiao", "shipinhao"}
     assert drafts["toutiao"].content_format == "markdown"
     assert drafts["shipinhao"].content_format == "script"
+
+
+def test_generate_drafts_supports_zhihu_qa_fallback(tmp_path):
+    config = make_config(tmp_path)
+    material = normalize_material(
+        {
+            "title_hint": "办公选址工具",
+            "raw_content": "帮助企业快速查看楼宇和企业信息。",
+            "target_platforms": ["zhihu_qa"],
+        }
+    )
+
+    source, drafts = generate_drafts(material, config)
+
+    assert source == "fallback_template"
+    assert set(drafts) == {"zhihu_qa"}
+    assert drafts["zhihu_qa"].content_format == "markdown"
+    assert "问题：" in drafts["zhihu_qa"].content
 
 
 def test_wechat_safe_title_trims_utf8_bytes():
@@ -455,6 +488,13 @@ def test_parse_batch_csv_and_create_job(tmp_path):
         assert job.items[0].title_hint == "选题A"
     finally:
         session.close()
+
+
+def test_parse_batch_csv_maps_zhihu_qa_aliases():
+    csv_content = "标题,素材正文,目标平台\n选题A,正文A,知乎问答\n选题B,正文B,知乎Q&A\n".encode("utf-8-sig")
+    materials = parse_batch_file("batch.csv", csv_content)
+
+    assert [material.target_platforms for material in materials] == [["zhihu_qa"], ["zhihu_qa"]]
 
 
 def test_process_image_creates_platform_variants(tmp_path):

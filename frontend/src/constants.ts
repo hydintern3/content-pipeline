@@ -3,6 +3,7 @@ import type { Platform } from "@/types";
 export const platformOptions: Array<{ label: string; value: Platform }> = [
   { label: "小红书", value: "xiaohongshu" },
   { label: "知乎", value: "zhihu" },
+  { label: "知乎 Q&A", value: "zhihu_qa" },
   { label: "公众号", value: "official_account" },
   { label: "头条", value: "toutiao" },
   { label: "视频号", value: "shipinhao" },

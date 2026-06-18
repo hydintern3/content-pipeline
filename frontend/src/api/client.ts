@@ -8,6 +8,7 @@ import type {
   ImageAsset,
   MaterialPayload,
   MaterialRecord,
+  Platform,
   PublishTask,
 } from "@/types";
 
@@ -58,6 +59,11 @@ export async function fetchTasks(limit = 20) {
 export async function checkCompliance(articles: Article[]) {
   const payload = await unwrap(http.post("/api/compliance/check", { articles }));
   return (payload.data as { results: ComplianceResult[] }).results;
+}
+
+export async function checkArticleCompliance(text: string, platform: Platform) {
+  const payload = await unwrap(http.post("/api/compliance/check", { text, platform }));
+  return payload.data as ComplianceResult;
 }
 
 export async function uploadBatchFile(file: File, config: object) {

@@ -1,4 +1,4 @@
-export type Platform = "xiaohongshu" | "zhihu" | "official_account" | "toutiao" | "shipinhao";
+export type Platform = "xiaohongshu" | "zhihu" | "zhihu_qa" | "official_account" | "toutiao" | "shipinhao";
 
 export interface MaterialPayload {
   title_hint: string;
