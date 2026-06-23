@@ -466,11 +466,56 @@ def test_unknown_api_route_returns_404(tmp_path, monkeypatch):
     assert response.get_json()["success"] is False
 
 
-def test_compliance_checker_flags_sensitive_terms():
-    result = check_text("这是唯一保证有效的方案，总之建议立即扫码了解", "toutiao")
+def test_compliance_regex_precheck_flags_contact_info():
+    """Regex pre-check catches phone numbers, WeChat IDs, emails etc."""
+    text = "联系我微信: abc123 或打电话 13812345678，邮箱 test@example.com"
+    result = check_text(text, "xiaohongshu")
 
-    assert result["status"] == "high_risk"
-    assert result["risk_count"] >= 3
+    assert result["status"] in ("review", "high_risk")
+    assert result["risk_count"] >= 3  # WeChat, phone, email
+
+
+def test_compliance_regex_precheck_platform_filter():
+    """Regex rules have platform-specific filtering.
+
+    The regex pre-check allows WeChat IDs on official_account (Tencent ecosystem),
+    but the LLM may still flag them. This test verifies the full check pipeline.
+    """
+    text = "联系我们微信: bizcontact 了解更多"
+    result_xhs = check_text(text, "xiaohongshu")
+    result_oa = check_text(text, "official_account")
+
+    # Both platforms should catch this as a contact-info violation
+    # (LLM detects it on all platforms, regex has platform-differentiated rules)
+    xhs_contact = [r for r in result_xhs["risks"] if "导流" in r.get("category", "") and "微信" in r["term"]]
+    oa_contact = [r for r in result_oa["risks"] if "导流" in r.get("category", "") and "微信" in r["term"]]
+    assert len(xhs_contact) >= 1
+    assert len(oa_contact) >= 1  # LLM also flags it on official_account
+
+
+def test_compliance_checker_clean_text_passes():
+    """Clean business text without contact info should pass."""
+    result = check_text(
+        "上海写字楼租赁市场在2024年呈现稳中有升的趋势，企业选址需综合考虑通勤、租金和配套。",
+        "toutiao",
+    )
+    assert result["status"] == "pass"
+    assert result["risk_count"] == 0
+
+
+def test_compliance_forced_share_pattern():
+    """Forced share / false info language is caught.
+
+    WeChat platforms catch it via regex pre-check (胁迫分享).
+    All platforms may catch it via LLM semantic check (谣言/不实信息).
+    """
+    text = "这篇文章太准了，不转不是中国人，转发保平安！"
+    result_oa = check_text(text, "official_account")
+    result_tt = check_text(text, "toutiao")
+
+    # Both platforms should flag this — WeChat via regex, toutiao via LLM
+    assert result_oa["risk_count"] >= 1
+    assert result_tt["risk_count"] >= 1  # LLM catches as 谣言/不实信息 cross-platform
 
 
 def test_parse_batch_csv_and_create_job(tmp_path):

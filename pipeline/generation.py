@@ -43,12 +43,11 @@ PLATFORM_RULES = {
 小红书：
 - 账号：Jade一城探访记。
 - 运营方向：公域泛流量种草，抓取精准 B 端刚需客户；标题要带痛点，轻量化图文/短笔记，适合搜索流量。
-- 人设：温柔专业的行业干货博主，接地气、好读易懂，像在做选址避坑和招商获客经验分享。
-- 内容范围：选址避坑指南、招商获客技巧、供需对接流程指南、小程序功能指南。
+- 人设：温柔专业的行业干货博主，接地气、好读易懂。
 - 文风：第一人称、轻量化、场景化、痛点直击，拒绝官方腔、教科书口吻和长篇大论。
-- 篇幅：默认 250-600 字，信息密度高但不压迫。
-- 开头：优先用“我踩过/客户常问/很多人忽略/选址前先看”这类场景、痛点、避坑切入，不要万能开场。
-- 内容：少量商务风 emoji 可用，但不要花哨；
+- 篇幅：默认 250-600 字，拒绝长篇大论。
+- 标题：痛点直击、场景化种草、颜值排版，拒绝标题党、夸大承诺和极限词。
+- 内容：使用较多 emoji ，但不要花哨；轻量化图文 / 短笔记、场景化种草、痛点直击、颜值排版、搜索流量极强。
 - 合规：不写硬广、二维码、联系方式、夸张承诺和明显导流。
 - 结尾：自然引导收藏、评论或私信领取资料。
 - 输出：正文末尾生成 3-6 个垂直精准话题标签。
@@ -126,7 +125,7 @@ B 端业务语境：
 COMPLIANCE_RULES = """
 合规和风控要求：
 - 规避广告法极限词、夸大承诺、虚假宣传、诱导转发、强制导流、联系方式和二维码描述。
-- 不写“最、第一、唯一、保证、必然、稳赚、官方指定”等高风险表达。
+- 不写“第一、唯一、保证、必然、稳赚、官方指定”等高风险表达。
 - 如果素材中出现联系方式、二维码、强导流内容，要改写为“可在对应入口了解”这类温和表达。
 - 输出应是可进入人工小幅润色的初稿，不要在正文外额外解释风险。
 """
@@ -266,14 +265,16 @@ async def generate_each_platform_with_llm(material: MaterialInput, config: AppCo
         timeout=LLM_TIMEOUT_SECONDS,
         max_retries=LLM_MAX_RETRIES,
     )
-    drafts: dict[str, ArticleDraft] = {}
-    for platform in material.target_platforms:
+
+    async def _generate_one(platform: str) -> tuple[str, ArticleDraft]:
         try:
-            drafts[platform] = await generate_platform_with_llm(client, material, config, platform)
+            return platform, await generate_platform_with_llm(client, material, config, platform)
         except Exception as exc:
             LOGGER.exception("LLM generation failed for %s; using fallback template: %s", platform, exc)
-            drafts[platform] = fallback_draft(material, platform)
-    return drafts
+            return platform, fallback_draft(material, platform)
+
+    results = await asyncio.gather(*(_generate_one(p) for p in material.target_platforms))
+    return dict(results)
 
 
 def generate_drafts(material: MaterialInput, config: AppConfig) -> tuple[str, dict[str, ArticleDraft]]:

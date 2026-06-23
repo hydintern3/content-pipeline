@@ -43,6 +43,29 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     );
   }
 
+  // Run async tasks with a concurrency cap so the browser, server, and
+  // LLM API are not overwhelmed.  Results stream in incrementally as
+  // each task completes — the UI updates platform-by-platform.
+  async function withConcurrencyLimit<T, R>(
+    items: T[],
+    limit: number,
+    fn: (item: T) => Promise<R>,
+    onProgress: (item: T) => void,
+  ): Promise<R[]> {
+    const results: R[] = [];
+    const queue = [...items];
+    async function worker() {
+      while (queue.length) {
+        const item = queue.shift()!;
+        const result = await fn(item);
+        results.push(result);
+        onProgress(item);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+    return results;
+  }
+
   async function generate() {
     const configStore = useConfigStore();
     const baseMaterial = materialPayload();
@@ -53,14 +76,13 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     articles.value = [];
     source.value = "";
     try {
-      await Promise.all(
-        platforms.map(async (platform) => {
+      await withConcurrencyLimit(
+        platforms,
+        3,
+        async (platform) => {
           try {
             const payload = await generateMaterial(
-              {
-                ...baseMaterial,
-                target_platforms: [platform],
-              },
+              { ...baseMaterial, target_platforms: [platform] },
               configStore.requestConfig(),
             );
             const returnedArticles = (payload.articles || []) as Article[];
@@ -80,7 +102,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
           } finally {
             generatingPlatforms.value = generatingPlatforms.value.filter((item) => item !== platform);
           }
-        }),
+        },
+        (_platform) => {
+          // UI reactively updates via the store mutations above
+        },
       );
       const failedCount = Object.keys(generationErrors.value).length;
       if (!articles.value.length && failedCount) {
