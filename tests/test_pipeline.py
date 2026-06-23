@@ -116,6 +116,9 @@ def test_generation_prompts_include_task_rules():
     assert "小红书" in user_prompt
     assert "今日头条" in user_prompt
     assert "视频号" in user_prompt
+    assert "商引羚航" in user_prompt
+    assert "Jade一城探访记" in user_prompt
+    assert "一城探访手记" in user_prompt
     assert "知乎 Q&A" in user_prompt
     assert "先用 1-2 句话直接回答" in user_prompt
     assert '"shipinhao"' in user_prompt
