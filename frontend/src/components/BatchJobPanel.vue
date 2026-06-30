@@ -31,18 +31,19 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 
-import { fetchBatchJobs, uploadBatchFile } from "@/api/client";
+import { fetchBatchJob, fetchBatchJobs, uploadBatchFile, watchTaskJob } from "@/api/client";
 import { useConfigStore } from "@/stores/config";
-import type { BatchJob } from "@/types";
+import type { BatchJob, TaskJob } from "@/types";
 
 const configStore = useConfigStore();
 const jobs = ref<BatchJob[]>([]);
 const selectedFile = ref<File | null>(null);
 const loading = ref(false);
 const uploading = ref(false);
+const stopWatchers: Array<() => void> = [];
 
 function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -55,8 +56,11 @@ async function upload() {
   }
   uploading.value = true;
   try {
-    const job = await uploadBatchFile(selectedFile.value, configStore.requestConfig());
+    const { job, task } = await uploadBatchFile(selectedFile.value, configStore.requestConfig());
     jobs.value = [job, ...jobs.value.filter((item) => item.id !== job.id)];
+    if (task) {
+      watchBatchTask(job.id, task);
+    }
     ElMessage.success("批量任务已创建");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "批量任务创建失败");
@@ -76,5 +80,24 @@ async function loadJobs() {
   }
 }
 
+function watchBatchTask(jobId: number, task: TaskJob) {
+  const stop = watchTaskJob(
+    task.id,
+    async (nextTask) => {
+      if (["success", "failed"].includes(nextTask.status)) {
+        const freshJob = await fetchBatchJob(jobId);
+        jobs.value = jobs.value.map((item) => (item.id === jobId ? freshJob : item));
+      }
+    },
+    (error) => {
+      ElMessage.error(error.message);
+    },
+  );
+  stopWatchers.push(stop);
+}
+
 onMounted(loadJobs);
+onBeforeUnmount(() => {
+  stopWatchers.forEach((stop) => stop());
+});
 </script>

@@ -18,11 +18,13 @@
 </template>
 
 <script setup lang="ts">
-import BatchJobPanel from "@/components/BatchJobPanel.vue";
-import CompliancePanel from "@/components/CompliancePanel.vue";
-import GenerationHistoryPanel from "@/components/GenerationHistoryPanel.vue";
-import ImageWorkflowPanel from "@/components/ImageWorkflowPanel.vue";
-import MaterialInputPanel from "@/components/MaterialInputPanel.vue";
-import PlatformResultColumns from "@/components/PlatformResultColumns.vue";
-import TaskHistoryPanel from "@/components/TaskHistoryPanel.vue";
+import { defineAsyncComponent } from "vue";
+
+const BatchJobPanel = defineAsyncComponent(() => import("@/components/BatchJobPanel.vue"));
+const CompliancePanel = defineAsyncComponent(() => import("@/components/CompliancePanel.vue"));
+const GenerationHistoryPanel = defineAsyncComponent(() => import("@/components/GenerationHistoryPanel.vue"));
+const ImageWorkflowPanel = defineAsyncComponent(() => import("@/components/ImageWorkflowPanel.vue"));
+const MaterialInputPanel = defineAsyncComponent(() => import("@/components/MaterialInputPanel.vue"));
+const PlatformResultColumns = defineAsyncComponent(() => import("@/components/PlatformResultColumns.vue"));
+const TaskHistoryPanel = defineAsyncComponent(() => import("@/components/TaskHistoryPanel.vue"));
 </script>

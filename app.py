@@ -4,13 +4,14 @@ import logging
 import os
 import json
 import tempfile
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock
 from typing import Any
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 from sqlalchemy import select
 from werkzeug.utils import secure_filename
 
@@ -18,10 +19,10 @@ from pipeline.batch import batch_job_payload, create_batch_job, parse_batch_file
 from pipeline.compliance import check_articles, check_text
 from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
 from pipeline.database import create_app_engine, create_session_factory, init_database, session_scope
-from pipeline.generation import follow_up_article_with_llm, generate_drafts
+from pipeline.generation import follow_up_article_with_llm, generate_drafts, material_for_platform
 from pipeline.image_processing import process_image
 from pipeline.ingestion import fetch_recent_materials
-from pipeline.models import BatchJob, ImageAsset, ImageVariant
+from pipeline.models import BatchJob, ImageAsset, ImageVariant, TaskJob
 from pipeline.publishers import publish_article
 from pipeline.repository import (
     article_payload,
@@ -43,6 +44,7 @@ from pipeline.repository import (
 )
 from pipeline.scheduler import start_scheduler
 from pipeline.schemas import normalize_list, normalize_material
+from pipeline.task_queue import TaskQueue, task_job_payload
 
 
 logging.basicConfig(
@@ -67,6 +69,7 @@ except Exception:
     init_database(engine)
 SessionLocal = create_session_factory(engine)
 scheduler = start_scheduler(config, SessionLocal)
+task_queue = TaskQueue(SessionLocal)
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
@@ -311,6 +314,77 @@ def config_from_form() -> Any:
     return config_for_request({"config": parsed})
 
 
+def generation_task_handler(payload: dict[str, Any], request_config: Any):
+    material_input = normalize_material(payload.get("material") or payload)
+    history_run_id = clean_text(payload.get("history_run_id"))[:80]
+    history_expected_platforms = normalize_list(payload.get("history_expected_platforms"))
+    platforms = list(material_input.target_platforms)
+
+    def run(progress):
+        source = ""
+        articles_payload: list[dict[str, Any]] = []
+        material_result: dict[str, Any] | None = None
+        errors: dict[str, str] = {}
+        total = len(platforms)
+        progress.update(0, total, "生成任务开始执行")
+
+        for index, platform in enumerate(platforms, start=1):
+            progress.update(index - 1, total, f"正在生成 {platform}")
+            platform_input = material_for_platform(material_input, platform)
+            try:
+                platform_source, drafts = generate_drafts(platform_input, request_config)
+                with session_scope(SessionLocal) as session:
+                    material = create_material(session, platform_input)
+                    articles = create_articles(session, material, drafts)
+                    if history_run_id:
+                        with HISTORY_LOCK:
+                            run_record = get_or_create_generation_run(
+                                session,
+                                history_run_id,
+                                material_input,
+                                history_expected_platforms or platforms,
+                            )
+                            link_generation_articles(session, run_record, articles)
+                    material_result = material_result or material_payload(material)
+                    articles_payload.extend(article_payload(article) for article in articles)
+                source = source or platform_source
+            except Exception as exc:
+                LOGGER.exception("Queued generation failed for platform %s", platform)
+                errors[platform] = str(exc)
+            progress.update(index, total, f"已完成 {index}/{total} 个平台")
+
+        if not articles_payload and errors:
+            raise RuntimeError("全部平台生成失败")
+
+        return {
+            "source": source,
+            "material": material_result,
+            "articles": articles_payload,
+            "errors": errors,
+            "failed_count": len(errors),
+        }
+
+    return run
+
+
+def task_event_stream(task_id: str):
+    last_payload = ""
+    while True:
+        with session_scope(SessionLocal) as session:
+            task = session.get(TaskJob, task_id)
+            if not task:
+                yield "event: error\ndata: {\"message\":\"task not found\"}\n\n"
+                return
+            payload = json.dumps(task_job_payload(task), ensure_ascii=False)
+            status = task.status
+        if payload != last_payload:
+            yield f"event: progress\ndata: {payload}\n\n"
+            last_payload = payload
+        if status in {"success", "failed"}:
+            return
+        time.sleep(1)
+
+
 @app.get("/api/config/status")
 def config_status():
     return ok(
@@ -395,6 +469,44 @@ def generate_from_material():
     except Exception as exc:
         LOGGER.exception("Generate request failed")
         return error(f"生成失败：{exc}", 500)
+
+
+@app.post("/api/materials/generate_job")
+def create_generation_job():
+    try:
+        payload = request.get_json(silent=True) or {}
+        material_input = normalize_material(payload.get("material") or payload)
+        request_config = config_for_request(payload)
+        task = task_queue.enqueue(
+            "material_generation",
+            generation_task_handler(payload, request_config),
+            total=len(material_input.target_platforms),
+            message="生成任务已进入队列",
+        )
+        return ok({"task": task_job_payload(task)})
+    except ValueError as exc:
+        return error(str(exc), 400)
+    except Exception as exc:
+        LOGGER.exception("Generation job creation failed")
+        return error(f"生成任务创建失败：{exc}", 500)
+
+
+@app.get("/api/task_jobs/<task_id>")
+def get_task_job(task_id: str):
+    with session_scope(SessionLocal) as session:
+        task = session.get(TaskJob, task_id)
+        if not task:
+            return error(f"任务不存在：{task_id}", 404)
+        return ok({"task": task_job_payload(task)})
+
+
+@app.get("/api/task_jobs/<task_id>/events")
+def stream_task_job(task_id: str):
+    return Response(
+        stream_with_context(task_event_stream(task_id)),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/materials/pull_recent")
@@ -563,15 +675,18 @@ def batch_generate():
         with session_scope(SessionLocal) as session:
             job = create_batch_job(session, uploaded_file.filename, materials)
             job_id = job.id
-        worker = Thread(
-            target=process_batch_job,
-            args=(job_id, request_config, SessionLocal),
-            daemon=True,
+        task = task_queue.enqueue(
+            "batch_generation",
+            lambda progress: (
+                process_batch_job(job_id, request_config, SessionLocal, progress.update)
+                or {"batch_job_id": job_id}
+            ),
+            total=len(materials),
+            message="批量生成任务已进入队列",
         )
-        worker.start()
         with session_scope(SessionLocal) as session:
             job = session.get(BatchJob, job_id)
-            return ok({"job": batch_job_payload(job, include_items=True)})
+            return ok({"job": batch_job_payload(job, include_items=True), "task": task_job_payload(task)})
     except Exception as exc:
         LOGGER.exception("Batch generate failed")
         return error(f"批量任务创建失败：{exc}", 500)

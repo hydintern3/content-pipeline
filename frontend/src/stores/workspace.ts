@@ -3,11 +3,13 @@ import { defineStore } from "pinia";
 
 import {
   checkArticleCompliance,
+  createGenerationJob,
   fetchTasks,
   followUpArticle as followUpArticleRequest,
   generateMaterial,
   publishArticles as publishArticlesRequest,
   pullRecentMaterials,
+  watchTaskJob,
 } from "@/api/client";
 import type {
   Article,
@@ -17,6 +19,7 @@ import type {
   MaterialPayload,
   Platform,
   PublishTask,
+  TaskJob,
 } from "@/types";
 import { commaList } from "@/utils/text";
 import { useConfigStore } from "./config";
@@ -34,6 +37,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const source = ref("");
   const generating = ref(false);
   const generatingPlatforms = ref<Platform[]>([]);
+  const generationTask = ref<TaskJob | null>(null);
   const generationErrors = ref<Partial<Record<Platform, string>>>({});
   const loadingTasks = ref(false);
   const historyRevision = ref(0);
@@ -267,7 +271,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     startComplianceWorkers();
   }
 
-  async function generate() {
+  async function generateLegacy() {
     const configStore = useConfigStore();
     const baseMaterial = materialPayload();
     const platforms = [...baseMaterial.target_platforms];
@@ -329,6 +333,75 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     }
   }
 
+  async function generate() {
+    const configStore = useConfigStore();
+    const baseMaterial = materialPayload();
+    const platforms = [...baseMaterial.target_platforms];
+    const historyRunId = createHistoryRunId();
+    generating.value = true;
+    generatingPlatforms.value = [...platforms];
+    generationTask.value = null;
+    generationErrors.value = {};
+    articles.value = [];
+    source.value = "";
+    resetComplianceState();
+    followUpsByArticle.value = {};
+    followingUpArticleIds.value = {};
+    try {
+      const task = await createGenerationJob(
+        baseMaterial,
+        configStore.requestConfig(),
+        { runId: historyRunId, expectedPlatforms: platforms },
+      );
+      generationTask.value = task;
+      const completedTask = await waitForGenerationTask(task.id);
+      if (completedTask.status === "failed") {
+        throw new Error(completedTask.error_message || "生成任务失败");
+      }
+      const result = completedTask.result as {
+        source?: string;
+        articles?: Article[];
+        errors?: Partial<Record<Platform, string>>;
+      };
+      const returnedArticles = result.articles || [];
+      source.value = result.source || "";
+      articles.value = sortArticlesByPlatform(returnedArticles, platforms);
+      generationErrors.value = result.errors || {};
+      pruneComplianceState();
+      enqueueCompliance(returnedArticles);
+      const failedCount = Object.keys(generationErrors.value).length;
+      if (!articles.value.length && failedCount) {
+        throw new Error("全部平台生成失败");
+      }
+      if (articles.value.length) {
+        historyRevision.value += 1;
+      }
+      return { failedCount };
+    } finally {
+      generating.value = false;
+      generatingPlatforms.value = [];
+    }
+  }
+
+  function waitForGenerationTask(taskId: string) {
+    return new Promise<TaskJob>((resolve, reject) => {
+      const stop = watchTaskJob(
+        taskId,
+        (task) => {
+          generationTask.value = task;
+          if (["success", "failed"].includes(task.status)) {
+            stop();
+            resolve(task);
+          }
+        },
+        (error) => {
+          stop();
+          reject(error);
+        },
+      );
+    });
+  }
+
   async function pullRecent() {
     const configStore = useConfigStore();
     const payload = await pullRecentMaterials(5, configStore.requestConfig());
@@ -385,6 +458,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     source.value = "";
     generationErrors.value = {};
     generatingPlatforms.value = [];
+    generationTask.value = null;
     resetComplianceState();
     followUpsByArticle.value = {};
     followingUpArticleIds.value = {};
@@ -402,6 +476,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     source.value = "history";
     generationErrors.value = {};
     generatingPlatforms.value = [];
+    generationTask.value = null;
     generating.value = false;
     resetComplianceState();
     followUpsByArticle.value = {};
@@ -423,6 +498,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     source,
     generating,
     generatingPlatforms,
+    generationTask,
     generationErrors,
     loadingTasks,
     historyRevision,

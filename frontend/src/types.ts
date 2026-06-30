@@ -88,6 +88,24 @@ export interface BatchJob {
   items?: BatchItem[];
 }
 
+export interface TaskJob {
+  id: string;
+  type: string;
+  status: "pending" | "running" | "success" | "failed" | string;
+  progress: {
+    current: number;
+    total: number;
+    percent: number;
+    message: string;
+  };
+  result: Record<string, unknown>;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
 export interface ImageVariant {
   id: number;
   platform: Platform;

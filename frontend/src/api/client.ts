@@ -13,6 +13,7 @@ import type {
   MaterialRecord,
   Platform,
   PublishTask,
+  TaskJob,
 } from "@/types";
 
 const http = axios.create({
@@ -53,6 +54,72 @@ export async function generateMaterial(
     }),
   );
   return payload as unknown as { source: string; material: MaterialRecord; articles: Article[] };
+}
+
+export async function createGenerationJob(
+  material: MaterialPayload,
+  config: object,
+  history?: { runId: string; expectedPlatforms: Platform[] },
+) {
+  const payload = await unwrap(
+    http.post("/api/materials/generate_job", {
+      material,
+      config,
+      history_run_id: history?.runId,
+      history_expected_platforms: history?.expectedPlatforms,
+    }),
+  );
+  return payload.task as TaskJob;
+}
+
+export async function fetchTaskJob(taskId: string) {
+  const payload = await unwrap(http.get(`/api/task_jobs/${encodeURIComponent(taskId)}`));
+  return payload.task as TaskJob;
+}
+
+export function taskJobEventsUrl(taskId: string) {
+  const path = `/api/task_jobs/${encodeURIComponent(taskId)}/events`;
+  const baseURL = String(import.meta.env.VITE_API_BASE_URL || "");
+  return baseURL ? `${baseURL.replace(/\/$/, "")}${path}` : path;
+}
+
+export function watchTaskJob(
+  taskId: string,
+  onUpdate: (task: TaskJob) => void,
+  onError: (error: Error) => void,
+) {
+  if (typeof EventSource !== "undefined") {
+    const source = new EventSource(taskJobEventsUrl(taskId));
+    source.addEventListener("progress", (event) => {
+      onUpdate(JSON.parse((event as MessageEvent).data) as TaskJob);
+    });
+    source.onerror = () => {
+      source.close();
+      onError(new Error("任务进度连接中断"));
+    };
+    return () => source.close();
+  }
+
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const poll = async () => {
+    try {
+      const task = await fetchTaskJob(taskId);
+      onUpdate(task);
+      if (!["success", "failed"].includes(task.status) && !stopped) {
+        timer = setTimeout(poll, 1000);
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error("任务进度读取失败"));
+    }
+  };
+  void poll();
+  return () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
+  };
 }
 
 export async function pullRecentMaterials(limit: number, config: object) {
@@ -105,7 +172,7 @@ export async function uploadBatchFile(file: File, config: object) {
   form.append("file", file);
   form.append("config", JSON.stringify(config || {}));
   const payload = await unwrap(http.post("/api/materials/batch_generate", form));
-  return payload.job as BatchJob;
+  return { job: payload.job as BatchJob, task: payload.task as TaskJob | undefined };
 }
 
 export async function fetchBatchJobs(limit = 20) {

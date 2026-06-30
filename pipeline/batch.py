@@ -5,7 +5,7 @@ import io
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -130,7 +130,12 @@ def create_batch_job(session: Session, filename: str, materials: list[MaterialIn
     return job
 
 
-def process_batch_job(job_id: int, config: AppConfig, session_factory) -> None:
+def process_batch_job(
+    job_id: int,
+    config: AppConfig,
+    session_factory,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> None:
     with session_factory() as session:
         job = session.get(BatchJob, job_id)
         if not job:
@@ -138,13 +143,16 @@ def process_batch_job(job_id: int, config: AppConfig, session_factory) -> None:
         job.status = "running"
         job.updated_at = datetime.utcnow()
         session.commit()
+        if progress_callback:
+            progress_callback(0, job.total_count, "批量任务开始执行")
 
     with session_factory() as session:
         item_ids = list(
             session.scalars(select(BatchItem.id).where(BatchItem.job_id == job_id).order_by(BatchItem.id)).all()
         )
 
-    for item_id in item_ids:
+    total = len(item_ids)
+    for index, item_id in enumerate(item_ids, start=1):
         with session_factory() as session:
             item = session.get(BatchItem, item_id)
             if not item:
@@ -152,6 +160,8 @@ def process_batch_job(job_id: int, config: AppConfig, session_factory) -> None:
             item.status = "running"
             item.updated_at = datetime.utcnow()
             session.commit()
+            if progress_callback:
+                progress_callback(index - 1, total, f"正在处理第 {index}/{total} 条")
 
         try:
             raw_input = json.loads(item.input_json or "{}")
@@ -182,6 +192,17 @@ def process_batch_job(job_id: int, config: AppConfig, session_factory) -> None:
                     item.updated_at = datetime.utcnow()
                 session.commit()
 
+        with session_factory() as session:
+            job = session.get(BatchJob, job_id)
+            if job:
+                items = list(session.scalars(select(BatchItem).where(BatchItem.job_id == job_id)).all())
+                job.success_count = sum(1 for item in items if item.status == "success")
+                job.failed_count = sum(1 for item in items if item.status == "failed")
+                job.updated_at = datetime.utcnow()
+                session.commit()
+                if progress_callback:
+                    progress_callback(index, total, f"已完成 {index}/{total} 条")
+
     with session_factory() as session:
         job = session.get(BatchJob, job_id)
         if not job:
@@ -195,6 +216,12 @@ def process_batch_job(job_id: int, config: AppConfig, session_factory) -> None:
         job.result_message = f"完成 {job.success_count}/{job.total_count}，失败 {job.failed_count}"
         job.updated_at = datetime.utcnow()
         session.commit()
+        if progress_callback:
+            progress_callback(
+                job.total_count,
+                job.total_count,
+                f"批量任务完成：成功 {job.success_count}，失败 {job.failed_count}",
+            )
 
 
 def batch_job_payload(job: BatchJob, include_items: bool = False) -> dict[str, Any]:

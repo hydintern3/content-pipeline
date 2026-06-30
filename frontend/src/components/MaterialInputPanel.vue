@@ -46,6 +46,14 @@
         </el-checkbox-group>
       </el-form-item>
 
+      <div v-if="workspace.generationTask" class="task-progress-inline">
+        <div class="task-progress-meta">
+          <span>{{ workspace.generationTask.progress.message || workspace.generationTask.status }}</span>
+          <span>{{ workspace.generationTask.progress.current }}/{{ workspace.generationTask.progress.total }}</span>
+        </div>
+        <el-progress :percentage="workspace.generationTask.progress.percent" :stroke-width="8" />
+      </div>
+
       <div class="button-row">
         <el-button @click="workspace.fillExample">示例</el-button>
         <el-button @click="workspace.clear">清空</el-button>
