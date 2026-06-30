@@ -19,6 +19,15 @@ PLATFORM_NAMES: dict[str, str] = {
     "toutiao": "今日头条",
     "shipinhao": "微信视频号",
 }
+SUPPORTED_COMPLIANCE_PLATFORMS = tuple(PLATFORM_NAMES.keys())
+CORE_RULE_CATEGORIES = (
+    "广告法极限词",
+    "导流风险",
+    "低俗色情",
+    "虚假宣传",
+    "未成年保护",
+    "AI痕迹",
+)
 
 # ── Condensed rule checklists (extracted from doc/ files) ──────────
 # Only includes rules detectable from text. Each rule is one line in
@@ -164,6 +173,11 @@ def _build_checklist(platform: str) -> str:
     if extra:
         return _BASE_RULES + "\n" + extra
     return _BASE_RULES
+
+
+def get_compliance_checklist(platform: str) -> str:
+    """Return the condensed compliance checklist for tests and diagnostics."""
+    return _build_checklist(platform)
 
 
 def build_compliance_system_prompt(platform: str) -> str:

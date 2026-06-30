@@ -15,6 +15,26 @@
       <el-form-item label="大模型 API Key">
         <el-input v-model="form.llm.api_key" type="password" show-password placeholder="留空保持不变" />
       </el-form-item>
+      <div class="two-col">
+        <el-form-item label="生成并发数">
+          <el-input-number v-model="form.generation.concurrency" :min="1" :max="10" />
+        </el-form-item>
+        <el-form-item label="合规并发数">
+          <el-input-number v-model="form.compliance.concurrency" :min="1" :max="10" />
+        </el-form-item>
+      </div>
+      <div class="two-col">
+        <el-form-item label="合规模型名称">
+          <el-input v-model="form.compliance.llm_model" placeholder="留空则使用内容生成模型" />
+        </el-form-item>
+        <el-form-item label="合规缓存大小">
+          <el-input-number v-model="form.compliance.cache_size" :min="0" :max="5000" />
+        </el-form-item>
+      </div>
+      <el-form-item>
+        <el-checkbox v-model="form.compliance.auto_check">生成后自动合规检查</el-checkbox>
+        <el-checkbox v-model="form.compliance.mock">合规 mock 模式</el-checkbox>
+      </el-form-item>
       <el-form-item label="外部素材数据库 URL">
         <el-input v-model="form.database.url" type="password" show-password placeholder="留空保持不变" />
       </el-form-item>
@@ -94,6 +114,16 @@ function compact(config: RuntimeConfig): Partial<RuntimeConfig> {
       base_url: config.llm.base_url,
       model: config.llm.model,
       ...(config.llm.api_key ? { api_key: config.llm.api_key } : {}),
+    },
+    generation: {
+      concurrency: config.generation.concurrency,
+    },
+    compliance: {
+      mock: config.compliance.mock,
+      llm_model: config.compliance.llm_model,
+      cache_size: config.compliance.cache_size,
+      auto_check: config.compliance.auto_check,
+      concurrency: config.compliance.concurrency,
     },
     database: {
       ...(config.database.url ? { url: config.database.url } : {}),

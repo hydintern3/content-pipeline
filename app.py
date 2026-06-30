@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -18,7 +18,7 @@ from pipeline.batch import batch_job_payload, create_batch_job, parse_batch_file
 from pipeline.compliance import check_articles, check_text
 from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
 from pipeline.database import create_app_engine, create_session_factory, init_database, session_scope
-from pipeline.generation import generate_drafts
+from pipeline.generation import follow_up_article_with_llm, generate_drafts
 from pipeline.image_processing import process_image
 from pipeline.ingestion import fetch_recent_materials
 from pipeline.models import BatchJob, ImageAsset, ImageVariant
@@ -26,8 +26,17 @@ from pipeline.publishers import publish_article
 from pipeline.repository import (
     article_payload,
     create_articles,
+    create_follow_up_article,
     create_material,
+    follow_up_payload,
+    generation_run_detail_payload,
+    generation_run_payload,
+    get_generation_run,
+    get_or_create_generation_run,
     get_article,
+    link_generation_articles,
+    list_article_followups,
+    list_generation_runs,
     material_payload,
     recent_tasks,
     task_payload,
@@ -84,6 +93,7 @@ UPLOAD_DIR = writable_runtime_dir("uploads", BASE_DIR / "data" / "uploads")
 IMAGE_OUTPUT_DIR = writable_runtime_dir("images", BASE_DIR / "data" / "images")
 
 app = Flask(__name__, static_folder=None)
+HISTORY_LOCK = Lock()
 
 
 def ok(payload: dict[str, Any]):
@@ -100,6 +110,12 @@ def env_overrides() -> dict[str, bool]:
         "llm_api_key": os.getenv("CONTENT_LLM_API_KEY") is not None,
         "llm_base_url": os.getenv("CONTENT_LLM_BASE_URL") is not None,
         "llm_model": os.getenv("CONTENT_LLM_MODEL") is not None,
+        "generation_concurrency": os.getenv("CONTENT_GENERATION_CONCURRENCY") is not None,
+        "compliance_mock": os.getenv("CONTENT_LLM_MOCK") is not None,
+        "compliance_llm_model": os.getenv("CONTENT_LLM_COMPLIANCE_MODEL") is not None,
+        "compliance_cache_size": os.getenv("CONTENT_COMPLIANCE_CACHE_SIZE") is not None,
+        "compliance_auto_check": os.getenv("CONTENT_COMPLIANCE_AUTO_CHECK") is not None,
+        "compliance_concurrency": os.getenv("CONTENT_COMPLIANCE_CONCURRENCY") is not None,
         "external_database_url": os.getenv("DATABASE_URL") is not None,
         "pending_output_dir": os.getenv("PENDING_OUTPUT_DIR") is not None,
         "wechat_app_id": os.getenv("WECHAT_APP_ID") is not None,
@@ -127,6 +143,16 @@ def default_config_payload() -> dict[str, Any]:
                 "api_key_configured": config.has_llm,
                 "base_url": saved("llm.base_url", "https://api.openai.com/v1"),
                 "model": saved("llm.model", "gpt-4o-mini"),
+            },
+            "generation": {
+                "concurrency": saved("generation.concurrency", 3),
+            },
+            "compliance": {
+                "mock": clean_bool(saved("compliance.mock", False)),
+                "llm_model": saved("compliance.llm_model", ""),
+                "cache_size": saved("compliance.cache_size", 512),
+                "auto_check": clean_bool(saved("compliance.auto_check", True)),
+                "concurrency": saved("compliance.concurrency", 2),
             },
             "database": {
                 "url": "",
@@ -175,6 +201,8 @@ def normalize_config_update(payload: dict[str, Any], existing: dict[str, Any]) -
         raise ValueError("配置内容格式不正确")
 
     llm = source.get("llm") if isinstance(source.get("llm"), dict) else {}
+    generation = source.get("generation") if isinstance(source.get("generation"), dict) else {}
+    compliance = source.get("compliance") if isinstance(source.get("compliance"), dict) else {}
     database = source.get("database") if isinstance(source.get("database"), dict) else {}
     publish = source.get("publish") if isinstance(source.get("publish"), dict) else {}
     wechat = source.get("wechat") if isinstance(source.get("wechat"), dict) else {}
@@ -188,6 +216,21 @@ def normalize_config_update(payload: dict[str, Any], existing: dict[str, Any]) -
         interval_minutes = max(5, int(interval_raw or 240))
     except (TypeError, ValueError) as exc:
         raise ValueError("定时任务间隔必须是数字") from exc
+    try:
+        generation_concurrency = max(
+            1,
+            int(generation.get("concurrency", nested_value(existing, "generation.concurrency", 3)) or 3),
+        )
+        compliance_cache_size = max(
+            0,
+            int(compliance.get("cache_size", nested_value(existing, "compliance.cache_size", 512)) or 512),
+        )
+        compliance_concurrency = max(
+            1,
+            int(compliance.get("concurrency", nested_value(existing, "compliance.concurrency", 2)) or 2),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("并发数和缓存大小必须是数字") from exc
 
     updated = default_json_config()
     updated["app_database_url"] = clean_text(
@@ -205,6 +248,18 @@ def normalize_config_update(payload: dict[str, Any], existing: dict[str, Any]) -
         or "https://api.openai.com/v1",
         "model": clean_text(llm.get("model", nested_value(existing, "llm.model", "gpt-4o-mini")))
         or "gpt-4o-mini",
+    }
+    updated["generation"] = {
+        "concurrency": generation_concurrency,
+    }
+    updated["compliance"] = {
+        "mock": clean_bool(compliance.get("mock", nested_value(existing, "compliance.mock", False))),
+        "llm_model": clean_text(compliance.get("llm_model", nested_value(existing, "compliance.llm_model", ""))),
+        "cache_size": compliance_cache_size,
+        "auto_check": clean_bool(
+            compliance.get("auto_check", nested_value(existing, "compliance.auto_check", True))
+        ),
+        "concurrency": compliance_concurrency,
     }
 
     database_url = clean_text(database.get("url"))
@@ -266,6 +321,16 @@ def config_status():
                     "base_url": config.llm_base_url,
                     "model": config.llm_model,
                 },
+                "generation": {
+                    "concurrency": config.generation_concurrency,
+                },
+                "compliance": {
+                    "mock": config.compliance_mock,
+                    "llm_model": config.compliance_llm_model or config.llm_model,
+                    "cache_size": config.compliance_cache_size,
+                    "auto_check": config.compliance_auto_check,
+                    "concurrency": config.compliance_concurrency,
+                },
                 "database": {
                     "configured": config.has_external_database,
                     "app_database_url": config.app_database_url,
@@ -302,11 +367,22 @@ def generate_from_material():
     try:
         payload = request.get_json(silent=True) or {}
         material_input = normalize_material(payload.get("material") or payload)
+        history_run_id = clean_text(payload.get("history_run_id"))[:80]
+        history_expected_platforms = normalize_list(payload.get("history_expected_platforms"))
         request_config = config_for_request(payload)
         source, drafts = generate_drafts(material_input, request_config)
         with session_scope(SessionLocal) as session:
             material = create_material(session, material_input)
             articles = create_articles(session, material, drafts)
+            if history_run_id:
+                with HISTORY_LOCK:
+                    run = get_or_create_generation_run(
+                        session,
+                        history_run_id,
+                        material_input,
+                        history_expected_platforms or material_input.target_platforms,
+                    )
+                    link_generation_articles(session, run, articles)
             return ok(
                 {
                     "source": source,
@@ -365,12 +441,96 @@ def tasks():
         return ok({"tasks": [task_payload(task) for task in recent_tasks(session, limit=limit)]})
 
 
+@app.post("/api/articles/<int:article_id>/follow_up")
+def follow_up_article(article_id: int):
+    payload = request.get_json(silent=True) or {}
+    instruction = clean_text(payload.get("instruction"))
+    if not instruction:
+        return error("缺少追问修改要求")
+    instruction = instruction[:2000]
+    request_config = config_for_request(payload)
+    if not request_config.has_llm:
+        return error("追问优化需要先配置 LLM API Key", 400)
+
+    with session_scope(SessionLocal) as session:
+        source_article = get_article(session, article_id)
+        if not source_article:
+            return error(f"文章不存在：{article_id}", 404)
+        source_payload = article_payload(source_article)
+
+    class ArticleSnapshot:
+        pass
+
+    snapshot = ArticleSnapshot()
+    snapshot.id = source_payload["id"]
+    snapshot.material_id = source_payload["material_id"]
+    snapshot.platform = source_payload["platform"]
+    snapshot.title = source_payload["title"]
+    snapshot.content = source_payload["content"]
+    snapshot.content_format = source_payload["format"]
+
+    try:
+        draft = follow_up_article_with_llm(snapshot, instruction, request_config)
+    except ValueError as exc:
+        return error(str(exc), 502)
+    except Exception as exc:
+        LOGGER.exception("Article follow-up failed")
+        return error(f"追问优化失败：{exc}", 502)
+
+    with session_scope(SessionLocal) as session:
+        source_article = get_article(session, article_id)
+        if not source_article:
+            return error(f"文章不存在：{article_id}", 404)
+        article, follow_up = create_follow_up_article(
+            session,
+            source_article,
+            draft,
+            instruction,
+            request_config.llm_model,
+        )
+        return ok(
+            {
+                "article": article_payload(article),
+                "follow_up": follow_up_payload(follow_up),
+                "follow_ups": [follow_up_payload(item) for item in list_article_followups(session, article.id)],
+            }
+        )
+
+
+@app.get("/api/history/generations")
+def generation_history():
+    limit = int(request.args.get("limit") or 20)
+    offset = int(request.args.get("offset") or 0)
+    query = clean_text(request.args.get("q"))
+    platform = clean_text(request.args.get("platform"))
+    with session_scope(SessionLocal) as session:
+        runs = list_generation_runs(
+            session,
+            limit=limit,
+            offset=offset,
+            query=query,
+            platform=platform,
+        )
+        return ok({"items": [generation_run_payload(run) for run in runs]})
+
+
+@app.get("/api/history/generations/<run_id>")
+def generation_history_detail(run_id: str):
+    with session_scope(SessionLocal) as session:
+        run = get_generation_run(session, run_id)
+        if not run:
+            return error(f"生成历史不存在：{run_id}", 404)
+        return ok({"item": generation_run_detail_payload(run)})
+
+
 @app.post("/api/compliance/check")
 def compliance_check():
     payload = request.get_json(silent=True) or {}
     articles = payload.get("articles")
+    request_config = config_for_request(payload)
+    force_refresh = clean_bool(payload.get("force_refresh", False))
     if isinstance(articles, list):
-        return ok({"data": check_articles(articles)})
+        return ok({"data": check_articles(articles, config=request_config, force_refresh=force_refresh)})
 
     text = str(payload.get("text") or "")
     platform = str(payload.get("platform") or "")
@@ -384,7 +544,7 @@ def compliance_check():
             platform = article.platform
     if not text.strip():
         return error("缺少待检查文本")
-    return ok({"data": check_text(text, platform)})
+    return ok({"data": check_text(text, platform, config=request_config, force_refresh=force_refresh)})
 
 
 @app.post("/api/materials/batch_generate")

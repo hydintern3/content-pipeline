@@ -38,17 +38,19 @@ import { ElMessage } from "element-plus";
 
 import { checkCompliance } from "@/api/client";
 import { platformLabels } from "@/constants";
+import { useConfigStore } from "@/stores/config";
 import { useWorkspaceStore } from "@/stores/workspace";
 import type { ComplianceResult } from "@/types";
 
 const workspace = useWorkspaceStore();
+const configStore = useConfigStore();
 const loading = ref(false);
 const results = ref<ComplianceResult[]>([]);
 
 async function runCheck() {
   loading.value = true;
   try {
-    results.value = await checkCompliance(workspace.articles);
+    results.value = await checkCompliance(workspace.articles, configStore.requestConfig(), true);
     ElMessage.success("合规检查完成");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "合规检查失败");

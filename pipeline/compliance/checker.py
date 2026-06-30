@@ -7,10 +7,14 @@ content guidelines. Falls back to regex-only mode when no LLM key is configured.
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import json
 import logging
 import os
 import re
+from collections import OrderedDict
+from threading import Lock
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -23,14 +27,62 @@ LOGGER = logging.getLogger(__name__)
 
 LLM_TIMEOUT_SECONDS = int(os.getenv("CONTENT_LLM_TIMEOUT_SECONDS", "120"))
 LLM_MAX_RETRIES = int(os.getenv("CONTENT_LLM_MAX_RETRIES", "1"))
+_CACHE_LOCK = Lock()
+_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
-def _build_llm_client() -> AsyncOpenAI | None:
-    """Create an AsyncOpenAI client from environment / config, or None."""
+def _resolve_config(config: Any = None):
+    if config is not None:
+        return config
     from pipeline.config import build_config
 
-    cfg = build_config()
-    if not cfg.has_llm:
+    return build_config()
+
+
+def _compliance_model(config: Any) -> str:
+    return str(getattr(config, "compliance_llm_model", "") or getattr(config, "llm_model", "")).strip()
+
+
+def _cache_key(text: str, platform: str, config: Any) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    model = _compliance_model(config)
+    mock = "1" if getattr(config, "compliance_mock", False) else "0"
+    return f"{platform}|{model}|{mock}|{digest}"
+
+
+def _cache_get(key: str) -> dict[str, Any] | None:
+    with _CACHE_LOCK:
+        cached = _CACHE.get(key)
+        if cached is None:
+            return None
+        _CACHE.move_to_end(key)
+        result = copy.deepcopy(cached)
+    result["cached"] = True
+    return result
+
+
+def _cache_set(key: str, value: dict[str, Any], max_size: int) -> None:
+    if max_size <= 0:
+        return
+    stored = copy.deepcopy(value)
+    stored["cached"] = False
+    with _CACHE_LOCK:
+        _CACHE[key] = stored
+        _CACHE.move_to_end(key)
+        while len(_CACHE) > max_size:
+            _CACHE.popitem(last=False)
+
+
+def clear_cache() -> None:
+    """Clear in-memory compliance check cache. Primarily useful for tests."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def _build_llm_client(config: Any = None) -> AsyncOpenAI | None:
+    """Create an AsyncOpenAI client from environment / config, or None."""
+    cfg = _resolve_config(config)
+    if getattr(cfg, "compliance_mock", False) or not cfg.has_llm:
         return None
     return AsyncOpenAI(
         api_key=cfg.llm_api_key,
@@ -159,17 +211,18 @@ def _parse_llm_response(raw_text: str) -> list[dict[str, Any]]:
     return results
 
 
-async def _llm_check_async(text: str, platform: str, client: AsyncOpenAI) -> list[dict[str, Any]]:
+async def _llm_check_async(
+    text: str,
+    platform: str,
+    client: AsyncOpenAI,
+    model: str,
+) -> list[dict[str, Any]]:
     """Run LLM-based semantic compliance check. Returns risk items (without positions)."""
-    from pipeline.config import build_config
-
-    cfg = build_config()
-
     system_prompt = build_compliance_system_prompt(platform)
     user_prompt = build_compliance_user_prompt(title="", content=text)
 
     response = await client.chat.completions.create(
-        model=cfg.llm_model,
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -181,14 +234,15 @@ async def _llm_check_async(text: str, platform: str, client: AsyncOpenAI) -> lis
     return _parse_llm_response(raw_text)
 
 
-def _llm_check(text: str, platform: str) -> list[dict[str, Any]]:
+def _llm_check(text: str, platform: str, config: Any = None) -> list[dict[str, Any]]:
     """Synchronous wrapper for LLM compliance check. Returns annotated risk items."""
-    client = _build_llm_client()
+    cfg = _resolve_config(config)
+    client = _build_llm_client(cfg)
     if client is None:
         return []
 
     try:
-        llm_items = asyncio.run(_llm_check_async(text, platform, client))
+        llm_items = asyncio.run(_llm_check_async(text, platform, client, _compliance_model(cfg)))
         return _locate_risks(text, llm_items)
     except Exception:
         LOGGER.exception("LLM compliance check failed for platform=%s", platform)
@@ -260,7 +314,12 @@ def _compute_status(risks: list[dict[str, Any]], llm_available: bool) -> str:
 # ── Public API ───────────────────────────────────────────────────
 
 
-def check_text(text: str, platform: str = "") -> dict[str, Any]:
+def check_text(
+    text: str,
+    platform: str = "",
+    config: Any = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
     """Check a single text for platform compliance violations.
 
     Runs regex pre-checks synchronously, then attempts an LLM semantic
@@ -270,18 +329,26 @@ def check_text(text: str, platform: str = "") -> dict[str, Any]:
     Returns:
         dict with keys: status, risk_count, risks
     """
+    cfg = _resolve_config(config)
     value = text or ""
+    cache_key = _cache_key(value, platform, cfg)
+    cache_size = int(getattr(cfg, "compliance_cache_size", 512) or 0)
+    if not force_refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
 
     # 1. Regex pre-check (always runs, no API call)
     regex_risks = _regex_check(value, platform)
 
     # 2. LLM semantic check (only if API key available)
-    client = _build_llm_client()
+    mock_mode = bool(getattr(cfg, "compliance_mock", False))
+    client = _build_llm_client(cfg)
     llm_available = client is not None
     llm_risks: list[dict[str, Any]] = []
     if llm_available:
         try:
-            llm_items = asyncio.run(_llm_check_async(value, platform, client))
+            llm_items = asyncio.run(_llm_check_async(value, platform, client, _compliance_model(cfg)))
             llm_risks = _locate_risks(value, llm_items)
         except Exception:
             LOGGER.exception("LLM compliance check failed for platform=%s", platform)
@@ -289,14 +356,22 @@ def check_text(text: str, platform: str = "") -> dict[str, Any]:
     # 3. Merge and compute status
     risks = _merge_risks(regex_risks, llm_risks)
 
-    return {
+    result = {
         "status": _compute_status(risks, llm_available),
         "risk_count": len(risks),
         "risks": risks,
+        "cached": False,
+        "mode": "mock" if mock_mode else ("llm" if llm_available else "regex_only"),
     }
+    _cache_set(cache_key, result, cache_size)
+    return result
 
 
-def check_articles(articles: list[dict[str, Any]]) -> dict[str, Any]:
+def check_articles(
+    articles: list[dict[str, Any]],
+    config: Any = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
     """Check multiple articles for compliance violations.
 
     Args:
@@ -310,7 +385,7 @@ def check_articles(articles: list[dict[str, Any]]) -> dict[str, Any]:
         platform = str(article.get("platform") or "")
         title = str(article.get("title") or "")
         content = str(article.get("content") or "")
-        result = check_text(f"{title}\n{content}", platform)
+        result = check_text(f"{title}\n{content}", platform, config=config, force_refresh=force_refresh)
         result["article_id"] = article.get("id")
         result["platform"] = platform
         results.append(result)

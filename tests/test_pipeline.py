@@ -10,10 +10,18 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.config import AppConfig
 from pipeline.batch import create_batch_job, parse_batch_file
-from pipeline.compliance import check_text
+from pipeline.compliance import check_text, clear_cache
+from pipeline.compliance import checker as compliance_checker
+from pipeline.compliance.prompts import (
+    CORE_RULE_CATEGORIES,
+    SUPPORTED_COMPLIANCE_PLATFORMS,
+    get_compliance_checklist,
+)
 from pipeline.database import create_session_factory, init_database
 from pipeline.image_processing import process_image
+from pipeline.models import ArticleFollowUp
 from pipeline.generation import (
+    build_follow_up_messages,
     build_system_prompt,
     build_user_prompt,
     generate_drafts,
@@ -26,10 +34,19 @@ from pipeline.publishers import (
     publish_article,
     wechat_safe_title,
 )
-from pipeline.repository import create_articles, create_material
-from pipeline.schemas import normalize_material
+from pipeline.repository import (
+    create_articles,
+    create_material,
+    generation_run_detail_payload,
+    generation_run_payload,
+    get_article,
+    get_or_create_generation_run,
+    link_generation_articles,
+    list_generation_runs,
+)
+from pipeline.schemas import ArticleDraft, normalize_material
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 
 
 def make_config(tmp_path, **overrides):
@@ -39,6 +56,12 @@ def make_config(tmp_path, **overrides):
         "llm_api_key": "",
         "llm_base_url": "https://api.openai.com/v1",
         "llm_model": "gpt-4o-mini",
+        "generation_concurrency": 3,
+        "compliance_mock": False,
+        "compliance_llm_model": "",
+        "compliance_cache_size": 512,
+        "compliance_auto_check": True,
+        "compliance_concurrency": 2,
         "pending_output_dir": tmp_path,
         "wechat_app_id": "",
         "wechat_app_secret": "",
@@ -199,6 +222,95 @@ def test_generate_drafts_supports_zhihu_qa_fallback(tmp_path):
     assert set(drafts) == {"zhihu_qa"}
     assert drafts["zhihu_qa"].content_format == "markdown"
     assert "问题：" in drafts["zhihu_qa"].content
+
+
+def test_generation_history_groups_split_platform_requests(tmp_path):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    init_database(engine)
+    session_factory = create_session_factory(engine)
+    config = make_config(tmp_path)
+
+    first_input = normalize_material(
+        {
+            "title_hint": "历史选题",
+            "raw_content": "历史素材正文",
+            "keywords": ["招商"],
+            "target_platforms": ["xiaohongshu"],
+        }
+    )
+    second_input = normalize_material(
+        {
+            "title_hint": "历史选题",
+            "raw_content": "历史素材正文",
+            "keywords": ["招商"],
+            "target_platforms": ["toutiao"],
+        }
+    )
+
+    session = session_factory()
+    try:
+        for material_input in [first_input, second_input]:
+            material = create_material(session, material_input)
+            _, drafts = generate_drafts(material_input, config)
+            articles = create_articles(session, material, drafts)
+            run = get_or_create_generation_run(
+                session,
+                "history-test-run",
+                material_input,
+                ["xiaohongshu", "toutiao"],
+            )
+            link_generation_articles(session, run, articles)
+        session.commit()
+
+        runs = list_generation_runs(session, limit=20)
+        assert len(runs) == 1
+        summary = generation_run_payload(runs[0])
+        assert summary["article_count"] == 2
+        assert summary["target_platforms"] == ["xiaohongshu", "toutiao"]
+        assert set(summary["generated_platforms"]) == {"xiaohongshu", "toutiao"}
+
+        detail = generation_run_detail_payload(runs[0])
+        assert detail["material"]["title_hint"] == "历史选题"
+        assert len(detail["articles"]) == 2
+    finally:
+        session.close()
+
+
+def test_generation_history_filters_by_keyword_and_platform(tmp_path):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    init_database(engine)
+    session_factory = create_session_factory(engine)
+    config = make_config(tmp_path)
+
+    session = session_factory()
+    try:
+        for run_id, title, platform in [
+            ("run-xhs", "小红书历史", "xiaohongshu"),
+            ("run-tt", "头条历史", "toutiao"),
+            ("run-zhihu-qa", "zhihu qa history", "zhihu_qa"),
+        ]:
+            material_input = normalize_material(
+                {
+                    "title_hint": title,
+                    "raw_content": f"{title}正文",
+                    "target_platforms": [platform],
+                }
+            )
+            material = create_material(session, material_input)
+            _, drafts = generate_drafts(material_input, config)
+            articles = create_articles(session, material, drafts)
+            run = get_or_create_generation_run(session, run_id, material_input, [platform])
+            link_generation_articles(session, run, articles)
+        session.commit()
+
+        assert [run.id for run in list_generation_runs(session, query="小红书")] == ["run-xhs"]
+        assert [run.id for run in list_generation_runs(session, platform="toutiao")] == ["run-tt"]
+        assert [run.id for run in list_generation_runs(session, platform="zhihu")] == []
+        assert [run.id for run in list_generation_runs(session, platform="zhihu_qa")] == [
+            "run-zhihu-qa"
+        ]
+    finally:
+        session.close()
 
 
 def test_wechat_safe_title_trims_utf8_bytes():
@@ -466,56 +578,434 @@ def test_unknown_api_route_returns_404(tmp_path, monkeypatch):
     assert response.get_json()["success"] is False
 
 
-def test_compliance_regex_precheck_flags_contact_info():
+def test_generation_history_api_keeps_legacy_generate_compatible(tmp_path, monkeypatch):
+    db_path = tmp_path / "pipeline.db"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_database_url": f"sqlite:///{db_path.as_posix()}",
+                "llm": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+                "database": {"url": ""},
+                "publish": {"pending_output_dir": str(tmp_path / "pending")},
+                "wechat": {"app_id": "", "app_secret": "", "auto_publish": False, "enable_mass_send": False},
+                "scheduler": {"enabled": False, "interval_minutes": 240},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+
+    response = client.post(
+        "/api/materials/generate",
+        json={
+            "material": {
+                "title_hint": "兼容生成",
+                "raw_content": "旧请求不带历史字段",
+                "target_platforms": ["toutiao"],
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert response.get_json()["articles"]
+
+    history_response = client.get("/api/history/generations")
+    assert history_response.status_code == 200
+    assert history_response.get_json()["items"] == []
+
+
+def test_generation_history_api_groups_split_generate_requests(tmp_path, monkeypatch):
+    db_path = tmp_path / "history-api.db"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_database_url": f"sqlite:///{db_path.as_posix()}",
+                "llm": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+                "database": {"url": ""},
+                "publish": {"pending_output_dir": str(tmp_path / "pending")},
+                "wechat": {"app_id": "", "app_secret": "", "auto_publish": False, "enable_mass_send": False},
+                "scheduler": {"enabled": False, "interval_minutes": 240},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+
+    for platform in ["xiaohongshu", "toutiao"]:
+        response = client.post(
+            "/api/materials/generate",
+            json={
+                "history_run_id": "api-history-run",
+                "history_expected_platforms": ["xiaohongshu", "toutiao"],
+                "material": {
+                    "title_hint": "接口历史",
+                    "raw_content": "同一次点击拆成多个平台请求",
+                    "target_platforms": [platform],
+                },
+            },
+        )
+        assert response.status_code == 200
+
+    detail_response = client.get("/api/history/generations/api-history-run")
+    assert detail_response.status_code == 200
+    detail = detail_response.get_json()["item"]
+    assert detail["article_count"] == 2
+    assert detail["target_platforms"] == ["xiaohongshu", "toutiao"]
+    assert {article["platform"] for article in detail["articles"]} == {"xiaohongshu", "toutiao"}
+
+
+def test_follow_up_prompt_uses_low_token_context():
+    class Article:
+        platform = "official_account"
+        title = "原始标题"
+        content = "当前文章正文"
+        content_format = "html"
+
+    messages = build_follow_up_messages(Article(), "把开头改得更直接")
+    joined = "\n".join(message["content"] for message in messages)
+
+    assert "当前文章正文" in joined
+    assert "把开头改得更直接" in joined
+    assert "平台约束摘要" in joined
+    assert "深度行业分析" not in joined
+    assert "平台专属规则" not in joined
+
+
+def test_article_follow_up_api_creates_revised_article(tmp_path, monkeypatch):
+    db_path = tmp_path / "follow-up.db"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_database_url": f"sqlite:///{db_path.as_posix()}",
+                "llm": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+                "database": {"url": ""},
+                "publish": {"pending_output_dir": str(tmp_path / "pending")},
+                "wechat": {"app_id": "", "app_secret": "", "auto_publish": False, "enable_mass_send": False},
+                "scheduler": {"enabled": False, "interval_minutes": 240},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+
+    response = client.post(
+        "/api/materials/generate",
+        json={
+            "material": {
+                "title_hint": "追问选题",
+                "raw_content": "原始素材正文",
+                "target_platforms": ["toutiao"],
+            }
+        },
+    )
+    article = response.get_json()["articles"][0]
+
+    def fake_follow_up(source_article, instruction, config):
+        assert source_article.id == article["id"]
+        assert instruction == "改得更像行业观察"
+        assert config.llm_model == "follow-model"
+        return ArticleDraft(
+            source_article.platform,
+            "优化后标题",
+            source_article.content + "\n优化后正文",
+            source_article.content_format,
+        )
+
+    monkeypatch.setattr(app_module, "follow_up_article_with_llm", fake_follow_up)
+    follow_response = client.post(
+        f"/api/articles/{article['id']}/follow_up",
+        json={
+            "instruction": "改得更像行业观察",
+            "config": {
+                "llm": {
+                    "api_key": "sk-test",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "follow-model",
+                }
+            },
+        },
+    )
+
+    assert follow_response.status_code == 200
+    payload = follow_response.get_json()
+    revised = payload["article"]
+    assert revised["id"] != article["id"]
+    assert revised["status"] == "revised"
+    assert revised["platform"] == article["platform"]
+    assert revised["format"] == article["format"]
+    assert "优化后正文" in revised["content"]
+    assert payload["follow_up"]["source_article_id"] == article["id"]
+    assert payload["follow_up"]["result_article_id"] == revised["id"]
+
+    session = app_module.SessionLocal()
+    try:
+        original = get_article(session, article["id"])
+        stored_revised = get_article(session, revised["id"])
+        follow_ups = list(session.scalars(select(ArticleFollowUp)).all())
+        assert original.content == article["content"]
+        assert stored_revised.status == "revised"
+        assert len(follow_ups) == 1
+        assert follow_ups[0].instruction == "改得更像行业观察"
+        assert follow_ups[0].model == "follow-model"
+    finally:
+        session.close()
+
+
+def test_article_follow_up_requires_llm_key(tmp_path, monkeypatch):
+    db_path = tmp_path / "follow-up-no-key.db"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_database_url": f"sqlite:///{db_path.as_posix()}",
+                "llm": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+                "database": {"url": ""},
+                "publish": {"pending_output_dir": str(tmp_path / "pending")},
+                "wechat": {"app_id": "", "app_secret": "", "auto_publish": False, "enable_mass_send": False},
+                "scheduler": {"enabled": False, "interval_minutes": 240},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+    response = client.post(
+        "/api/materials/generate",
+        json={
+            "material": {
+                "title_hint": "追问选题",
+                "raw_content": "原始素材正文",
+                "target_platforms": ["toutiao"],
+            }
+        },
+    )
+    article = response.get_json()["articles"][0]
+
+    follow_response = client.post(
+        f"/api/articles/{article['id']}/follow_up",
+        json={"instruction": "改得更短"},
+    )
+
+    assert follow_response.status_code == 400
+    assert follow_response.get_json()["success"] is False
+
+
+def test_article_follow_up_invalid_llm_result_does_not_create_article(tmp_path, monkeypatch):
+    db_path = tmp_path / "follow-up-invalid.db"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "app_database_url": f"sqlite:///{db_path.as_posix()}",
+                "llm": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+                "database": {"url": ""},
+                "publish": {"pending_output_dir": str(tmp_path / "pending")},
+                "wechat": {"app_id": "", "app_secret": "", "auto_publish": False, "enable_mass_send": False},
+                "scheduler": {"enabled": False, "interval_minutes": 240},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PIPELINE_CONFIG", str(config_path))
+
+    app_module = importlib.import_module("app")
+    app_module = importlib.reload(app_module)
+    client = app_module.app.test_client()
+    response = client.post(
+        "/api/materials/generate",
+        json={
+            "material": {
+                "title_hint": "追问选题",
+                "raw_content": "原始素材正文",
+                "target_platforms": ["toutiao"],
+            }
+        },
+    )
+    article = response.get_json()["articles"][0]
+
+    def fake_follow_up(*_args, **_kwargs):
+        raise ValueError("大模型返回内容不是 JSON 对象")
+
+    monkeypatch.setattr(app_module, "follow_up_article_with_llm", fake_follow_up)
+    follow_response = client.post(
+        f"/api/articles/{article['id']}/follow_up",
+        json={
+            "instruction": "改得更短",
+            "config": {"llm": {"api_key": "sk-test", "model": "follow-model"}},
+        },
+    )
+
+    assert follow_response.status_code == 502
+    session = app_module.SessionLocal()
+    try:
+        assert len(list(session.scalars(select(ArticleFollowUp)).all())) == 0
+    finally:
+        session.close()
+
+
+def test_compliance_regex_precheck_flags_contact_info(tmp_path):
     """Regex pre-check catches phone numbers, WeChat IDs, emails etc."""
     text = "联系我微信: abc123 或打电话 13812345678，邮箱 test@example.com"
-    result = check_text(text, "xiaohongshu")
+    result = check_text(text, "xiaohongshu", config=make_config(tmp_path, compliance_mock=True))
 
     assert result["status"] in ("review", "high_risk")
     assert result["risk_count"] >= 3  # WeChat, phone, email
 
 
-def test_compliance_regex_precheck_platform_filter():
+def test_compliance_regex_precheck_platform_filter(tmp_path):
     """Regex rules have platform-specific filtering.
 
     The regex pre-check allows WeChat IDs on official_account (Tencent ecosystem),
     but the LLM may still flag them. This test verifies the full check pipeline.
     """
     text = "联系我们微信: bizcontact 了解更多"
-    result_xhs = check_text(text, "xiaohongshu")
-    result_oa = check_text(text, "official_account")
+    config = make_config(tmp_path, compliance_mock=True)
+    result_xhs = check_text(text, "xiaohongshu", config=config)
+    result_oa = check_text(text, "official_account", config=config)
 
     # Both platforms should catch this as a contact-info violation
     # (LLM detects it on all platforms, regex has platform-differentiated rules)
     xhs_contact = [r for r in result_xhs["risks"] if "导流" in r.get("category", "") and "微信" in r["term"]]
     oa_contact = [r for r in result_oa["risks"] if "导流" in r.get("category", "") and "微信" in r["term"]]
     assert len(xhs_contact) >= 1
-    assert len(oa_contact) >= 1  # LLM also flags it on official_account
+    assert len(oa_contact) == 0
 
 
-def test_compliance_checker_clean_text_passes():
+def test_compliance_checker_clean_text_passes(monkeypatch, tmp_path):
     """Clean business text without contact info should pass."""
+    async def fake_llm_check(_text, _platform, _client, _model):
+        return []
+
+    monkeypatch.setattr(compliance_checker, "_llm_check_async", fake_llm_check)
     result = check_text(
         "上海写字楼租赁市场在2024年呈现稳中有升的趋势，企业选址需综合考虑通勤、租金和配套。",
         "toutiao",
+        config=make_config(tmp_path, llm_api_key="sk-test"),
     )
     assert result["status"] == "pass"
     assert result["risk_count"] == 0
 
 
-def test_compliance_forced_share_pattern():
+def test_compliance_forced_share_pattern(monkeypatch, tmp_path):
     """Forced share / false info language is caught.
 
     WeChat platforms catch it via regex pre-check (胁迫分享).
     All platforms may catch it via LLM semantic check (谣言/不实信息).
     """
+    async def fake_llm_check(_text, _platform, _client, _model):
+        return [
+            {
+                "term": "不转不是中国人",
+                "category": "谣言不实",
+                "level": "high",
+                "suggestion": "删除胁迫式传播话术",
+            }
+        ]
+
+    monkeypatch.setattr(compliance_checker, "_llm_check_async", fake_llm_check)
+    config = make_config(tmp_path, llm_api_key="sk-test")
     text = "这篇文章太准了，不转不是中国人，转发保平安！"
-    result_oa = check_text(text, "official_account")
-    result_tt = check_text(text, "toutiao")
+    result_oa = check_text(text, "official_account", config=config)
+    result_tt = check_text(text, "toutiao", config=config)
 
     # Both platforms should flag this — WeChat via regex, toutiao via LLM
     assert result_oa["risk_count"] >= 1
     assert result_tt["risk_count"] >= 1  # LLM catches as 谣言/不实信息 cross-platform
+
+
+def test_compliance_mock_mode_skips_llm(monkeypatch, tmp_path):
+    clear_cache()
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("mock mode should not call the LLM")
+
+    monkeypatch.setattr(compliance_checker, "_llm_check_async", fail_if_called)
+    config = make_config(
+        tmp_path,
+        llm_api_key="sk-test",
+        compliance_mock=True,
+    )
+
+    result = check_text("电话 13812345678", "xiaohongshu", config=config)
+
+    assert result["mode"] == "mock"
+    assert result["risk_count"] >= 1
+
+
+def test_compliance_uses_independent_model_and_fallback(monkeypatch, tmp_path):
+    clear_cache()
+    used_models: list[str] = []
+
+    async def fake_llm_check(_text, _platform, _client, model):
+        used_models.append(model)
+        return []
+
+    monkeypatch.setattr(compliance_checker, "_llm_check_async", fake_llm_check)
+
+    independent_config = make_config(
+        tmp_path,
+        llm_api_key="sk-test",
+        llm_model="content-model",
+        compliance_llm_model="compliance-model",
+    )
+    fallback_config = make_config(
+        tmp_path,
+        llm_api_key="sk-test",
+        llm_model="content-model",
+        compliance_llm_model="",
+    )
+
+    check_text("一段正常业务文本", "toutiao", config=independent_config, force_refresh=True)
+    check_text("另一段正常业务文本", "toutiao", config=fallback_config, force_refresh=True)
+
+    assert used_models == ["compliance-model", "content-model"]
+
+
+def test_compliance_result_cache_and_force_refresh(monkeypatch, tmp_path):
+    clear_cache()
+    call_count = 0
+
+    async def fake_llm_check(_text, _platform, _client, _model):
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    monkeypatch.setattr(compliance_checker, "_llm_check_async", fake_llm_check)
+    config = make_config(tmp_path, llm_api_key="sk-test", compliance_cache_size=2)
+
+    first = check_text("缓存测试文本", "zhihu", config=config)
+    second = check_text("缓存测试文本", "zhihu", config=config)
+    refreshed = check_text("缓存测试文本", "zhihu", config=config, force_refresh=True)
+
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert refreshed["cached"] is False
+    assert call_count == 2
+
+
+def test_compliance_rule_checklists_cover_supported_platforms():
+    for platform in SUPPORTED_COMPLIANCE_PLATFORMS:
+        checklist = get_compliance_checklist(platform)
+        assert checklist.strip()
+        for category in CORE_RULE_CATEGORIES:
+            assert category in checklist
 
 
 def test_parse_batch_csv_and_create_job(tmp_path):

@@ -27,6 +27,16 @@ def default_json_config() -> dict[str, Any]:
             "base_url": "https://api.openai.com/v1",
             "model": "gpt-4o-mini",
         },
+        "generation": {
+            "concurrency": 3,
+        },
+        "compliance": {
+            "mock": False,
+            "llm_model": "",
+            "cache_size": 512,
+            "auto_check": True,
+            "concurrency": 2,
+        },
         "database": {
             "url": "",
         },
@@ -110,6 +120,16 @@ def bool_env(name: str, config: dict[str, Any], config_path: str, default: bool 
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def int_env(name: str, config: dict[str, Any], config_path: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        value = nested_get(config, config_path, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def normalize_sqlite_url(value: str) -> str:
     if not value.startswith("sqlite:///"):
         return value
@@ -129,6 +149,12 @@ class AppConfig:
     llm_api_key: str
     llm_base_url: str
     llm_model: str
+    generation_concurrency: int
+    compliance_mock: bool
+    compliance_llm_model: str
+    compliance_cache_size: int
+    compliance_auto_check: bool
+    compliance_concurrency: int
     pending_output_dir: Path
     wechat_app_id: str
     wechat_app_secret: str
@@ -177,6 +203,21 @@ def config_from_dict(config: dict[str, Any]) -> AppConfig:
         llm_api_key=str_env("CONTENT_LLM_API_KEY", config, "llm.api_key", ""),
         llm_base_url=str_env("CONTENT_LLM_BASE_URL", config, "llm.base_url", "https://api.openai.com/v1"),
         llm_model=str_env("CONTENT_LLM_MODEL", config, "llm.model", "gpt-4o-mini"),
+        generation_concurrency=max(
+            1,
+            int_env("CONTENT_GENERATION_CONCURRENCY", config, "generation.concurrency", 3),
+        ),
+        compliance_mock=bool_env("CONTENT_LLM_MOCK", config, "compliance.mock", False),
+        compliance_llm_model=str_env("CONTENT_LLM_COMPLIANCE_MODEL", config, "compliance.llm_model", ""),
+        compliance_cache_size=max(
+            0,
+            int_env("CONTENT_COMPLIANCE_CACHE_SIZE", config, "compliance.cache_size", 512),
+        ),
+        compliance_auto_check=bool_env("CONTENT_COMPLIANCE_AUTO_CHECK", config, "compliance.auto_check", True),
+        compliance_concurrency=max(
+            1,
+            int_env("CONTENT_COMPLIANCE_CONCURRENCY", config, "compliance.concurrency", 2),
+        ),
         pending_output_dir=pending_dir,
         wechat_app_id=str_env("WECHAT_APP_ID", config, "wechat.app_id", ""),
         wechat_app_secret=str_env("WECHAT_APP_SECRET", config, "wechat.app_secret", ""),

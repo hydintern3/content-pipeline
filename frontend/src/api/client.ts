@@ -2,9 +2,12 @@ import axios from "axios";
 
 import type {
   Article,
+  ArticleFollowUp,
   BatchJob,
   ComplianceResult,
   ConfigEnvelope,
+  GenerationHistoryDetail,
+  GenerationHistoryItem,
   ImageAsset,
   MaterialPayload,
   MaterialRecord,
@@ -36,8 +39,19 @@ export async function fetchConfig() {
   return payload.data as ConfigEnvelope;
 }
 
-export async function generateMaterial(material: MaterialPayload, config: object) {
-  const payload = await unwrap(http.post("/api/materials/generate", { material, config }));
+export async function generateMaterial(
+  material: MaterialPayload,
+  config: object,
+  history?: { runId: string; expectedPlatforms: Platform[] },
+) {
+  const payload = await unwrap(
+    http.post("/api/materials/generate", {
+      material,
+      config,
+      history_run_id: history?.runId,
+      history_expected_platforms: history?.expectedPlatforms,
+    }),
+  );
   return payload as unknown as { source: string; material: MaterialRecord; articles: Article[] };
 }
 
@@ -51,18 +65,38 @@ export async function publishArticles(articleIds: number[], mode: string, config
   return payload as unknown as { tasks: PublishTask[] };
 }
 
+export async function followUpArticle(articleId: number, instruction: string, config: object) {
+  const payload = await unwrap(
+    http.post(`/api/articles/${articleId}/follow_up`, { instruction, config }),
+  );
+  return payload as unknown as {
+    article: Article;
+    follow_up: ArticleFollowUp;
+    follow_ups: ArticleFollowUp[];
+  };
+}
+
 export async function fetchTasks(limit = 20) {
   const payload = await unwrap(http.get(`/api/tasks?limit=${limit}`));
   return payload.tasks as PublishTask[];
 }
 
-export async function checkCompliance(articles: Article[]) {
-  const payload = await unwrap(http.post("/api/compliance/check", { articles }));
+export async function checkCompliance(articles: Article[], config: object, forceRefresh = false) {
+  const payload = await unwrap(
+    http.post("/api/compliance/check", { articles, config, force_refresh: forceRefresh }),
+  );
   return (payload.data as { results: ComplianceResult[] }).results;
 }
 
-export async function checkArticleCompliance(text: string, platform: Platform) {
-  const payload = await unwrap(http.post("/api/compliance/check", { text, platform }));
+export async function checkArticleCompliance(
+  text: string,
+  platform: Platform,
+  config: object,
+  forceRefresh = false,
+) {
+  const payload = await unwrap(
+    http.post("/api/compliance/check", { text, platform, config, force_refresh: forceRefresh }),
+  );
   return payload.data as ComplianceResult;
 }
 
@@ -91,4 +125,23 @@ export async function processImages(files: File[], topic: string, platforms: str
   form.append("platforms", platforms.join(","));
   const payload = await unwrap(http.post("/api/images/process", form));
   return payload.assets as ImageAsset[];
+}
+
+export async function fetchGenerationHistory(params: { limit?: number; offset?: number; q?: string; platform?: string }) {
+  const searchParams = new URLSearchParams();
+  searchParams.set("limit", String(params.limit ?? 20));
+  searchParams.set("offset", String(params.offset ?? 0));
+  if (params.q) {
+    searchParams.set("q", params.q);
+  }
+  if (params.platform) {
+    searchParams.set("platform", params.platform);
+  }
+  const payload = await unwrap(http.get(`/api/history/generations?${searchParams.toString()}`));
+  return payload.items as GenerationHistoryItem[];
+}
+
+export async function fetchGenerationHistoryDetail(runId: string) {
+  const payload = await unwrap(http.get(`/api/history/generations/${encodeURIComponent(runId)}`));
+  return payload.item as GenerationHistoryDetail;
 }

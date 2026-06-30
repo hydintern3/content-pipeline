@@ -5,6 +5,16 @@
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini"
   },
+  "generation": {
+    "concurrency": 3
+  },
+  "compliance": {
+    "mock": false,
+    "llm_model": "",
+    "cache_size": 512,
+    "auto_check": true,
+    "concurrency": 2
+  },
   "database": {
     "url": ""
   },

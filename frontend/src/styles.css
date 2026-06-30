@@ -211,6 +211,101 @@ textarea {
   gap: 8px;
 }
 
+.history-heading {
+  align-items: flex-end;
+}
+
+.history-actions {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 180px auto;
+  gap: 10px;
+  min-width: min(680px, 100%);
+}
+
+.history-table {
+  width: 100%;
+}
+
+.history-title {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-title:hover {
+  color: #2563eb;
+}
+
+.history-meta {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.history-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.history-detail {
+  display: grid;
+  gap: 18px;
+}
+
+.history-detail-section {
+  display: grid;
+  gap: 12px;
+}
+
+.history-detail-section h3,
+.history-article h4 {
+  margin: 0;
+  color: #111827;
+  letter-spacing: 0;
+}
+
+.history-detail-section h3 {
+  font-size: 16px;
+}
+
+.history-content {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  color: #334155;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.history-article {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.history-article header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.history-article small {
+  color: #64748b;
+}
+
 .article-tabs {
   min-width: 0;
 }
@@ -353,6 +448,55 @@ textarea {
   font-weight: 700;
 }
 
+.follow-up-dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.follow-up-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.follow-up-target strong {
+  overflow: hidden;
+  color: var(--text-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.follow-up-records {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.follow-up-records h4 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.follow-up-record {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.follow-up-record p {
+  margin: 0 0 6px;
+  color: var(--text-strong);
+  line-height: 1.55;
+}
+
+.follow-up-record small {
+  color: var(--text-muted);
+}
+
 pre {
   min-height: 360px;
   max-height: 560px;
@@ -392,5 +536,11 @@ pre {
 
   .two-col {
     grid-template-columns: 1fr;
+  }
+
+  .history-actions {
+    grid-template-columns: 1fr;
+    width: 100%;
+    min-width: 0;
   }
 }

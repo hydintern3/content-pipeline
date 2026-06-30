@@ -7,4 +7,4 @@ and contact information.
 
 from __future__ import annotations
 
-from .checker import check_articles, check_text  # noqa: F401
+from .checker import check_articles, check_text, clear_cache  # noqa: F401

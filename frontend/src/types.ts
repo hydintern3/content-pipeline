@@ -26,6 +26,15 @@ export interface Article {
   created_at: string;
 }
 
+export interface ArticleFollowUp {
+  id: number;
+  source_article_id: number;
+  result_article_id: number;
+  instruction: string;
+  model: string;
+  created_at: string;
+}
+
 export interface PublishTask {
   id: number;
   article_id: number;
@@ -53,6 +62,8 @@ export interface ComplianceResult {
   status: string;
   risk_count: number;
   risks: ComplianceRisk[];
+  cached?: boolean;
+  mode?: "mock" | "regex_only" | "llm" | string;
 }
 
 export interface BatchItem {
@@ -96,6 +107,25 @@ export interface ImageAsset {
   variants: ImageVariant[];
 }
 
+export interface GenerationHistoryItem {
+  id: string;
+  title_hint: string;
+  keywords: string[];
+  target_platforms: Platform[];
+  generated_platforms: Platform[];
+  article_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GenerationHistoryDetail extends GenerationHistoryItem {
+  material: MaterialPayload & {
+    source_type: string;
+    source_ref: string;
+  };
+  articles: Article[];
+}
+
 export interface RuntimeConfig {
   app_database_url: string;
   llm: {
@@ -103,6 +133,16 @@ export interface RuntimeConfig {
     api_key_configured?: boolean;
     base_url: string;
     model: string;
+  };
+  generation: {
+    concurrency: number;
+  };
+  compliance: {
+    mock: boolean;
+    llm_model: string;
+    cache_size: number;
+    auto_check: boolean;
+    concurrency: number;
   };
   database: {
     url?: string;

@@ -26,6 +26,15 @@ PLATFORM_FORMATS = {
     "shipinhao": "script",
 }
 
+FOLLOW_UP_PLATFORM_SUMMARIES = {
+    "xiaohongshu": "小红书短笔记：轻量、场景化、标题有痛点，避免硬广和长篇大论。",
+    "zhihu": "知乎专业长文：理性客观、逻辑严谨、减少营销感，适合问答和深度分析。",
+    "zhihu_qa": "知乎 Q&A：标题和正文围绕具体问题，先直接回答，再解释原因，最后给建议。",
+    "official_account": "公众号官方口吻：稳重专业、承接官方服务说明和行业分析，避免夸大承诺。",
+    "toutiao": "头条通俗干货：段落清晰、信息密度高、适合信息流阅读，避免标题党。",
+    "shipinhao": "视频号口播脚本：短句、上口、适合 15-60 秒短视频，结构清晰。",
+}
+
 PLATFORM_RULES = {
     "official_account": """
 公众号：
@@ -218,6 +227,60 @@ def parse_llm_json(raw_text: str, platforms: list[str]) -> dict[str, ArticleDraf
     return drafts
 
 
+def build_follow_up_messages(article: object, instruction: str) -> list[dict[str, str]]:
+    platform = str(getattr(article, "platform", "") or "")
+    content_format = str(getattr(article, "content_format", "") or "text")
+    title = str(getattr(article, "title", "") or "")
+    content = str(getattr(article, "content", "") or "")
+    platform_summary = FOLLOW_UP_PLATFORM_SUMMARIES.get(platform, "保持当前平台文风和排版习惯。")
+
+    system = (
+        "你是B端新媒体文章改稿助手。只根据当前文章和本轮修改要求改写，"
+        "不要索要更多上下文，不要编造原文没有的案例、数据、政策或客户名称。"
+        "保持事实边界、平台风格和合规表达。只输出JSON对象。"
+    )
+    user = f"""平台：{platform}
+平台约束摘要：{platform_summary}
+输出格式：{content_format}
+
+当前标题：
+{title}
+
+当前正文：
+{content}
+
+本轮修改要求：
+{instruction}
+
+请输出 JSON 对象，字段必须为：
+{{"title":"修改后的标题","content":"修改后的正文","format":"{content_format}"}}
+不要输出 Markdown 代码块，不要解释。"""
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_follow_up_json(raw_text: str, article: object) -> ArticleDraft:
+    text = raw_text.strip()
+    fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fenced_match:
+        text = fenced_match.group(1).strip()
+
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("大模型返回内容不是 JSON 对象")
+
+    platform = str(getattr(article, "platform", "") or "")
+    original_format = str(getattr(article, "content_format", "") or PLATFORM_FORMATS.get(platform, "text"))
+    title = str(parsed.get("title") or "").strip()
+    content = str(parsed.get("content") or "").strip()
+    content_format = str(parsed.get("format") or original_format).strip() or original_format
+    if not title or not content:
+        raise ValueError("大模型返回的追问改稿内容不完整")
+    return ArticleDraft(platform, title, content, content_format)
+
+
 async def generate_with_llm(material: MaterialInput, config: AppConfig) -> dict[str, ArticleDraft]:
     client = AsyncOpenAI(
         api_key=config.llm_api_key,
@@ -236,6 +299,29 @@ async def generate_with_llm(material: MaterialInput, config: AppConfig) -> dict[
     )
     raw_text = response.choices[0].message.content or ""
     return parse_llm_json(raw_text, material.target_platforms)
+
+
+async def follow_up_article_with_llm_async(article: object, instruction: str, config: AppConfig) -> ArticleDraft:
+    client = AsyncOpenAI(
+        api_key=config.llm_api_key,
+        base_url=config.llm_base_url,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=LLM_MAX_RETRIES,
+    )
+    response = await client.chat.completions.create(
+        model=config.llm_model,
+        messages=build_follow_up_messages(article, instruction),
+        response_format={"type": "json_object"},
+        temperature=0.45,
+    )
+    raw_text = response.choices[0].message.content or ""
+    return parse_follow_up_json(raw_text, article)
+
+
+def follow_up_article_with_llm(article: object, instruction: str, config: AppConfig) -> ArticleDraft:
+    if not config.has_llm:
+        raise ValueError("追问优化需要先配置 LLM API Key")
+    return asyncio.run(follow_up_article_with_llm_async(article, instruction, config))
 
 
 async def generate_platform_with_llm(

@@ -46,6 +46,74 @@ class GeneratedArticle(Base):
         back_populates="article",
         cascade="all, delete-orphan",
     )
+    generation_history_links: Mapped[list["GenerationRunArticle"]] = relationship(
+        back_populates="article",
+        cascade="all, delete-orphan",
+        foreign_keys="GenerationRunArticle.article_id",
+    )
+    followup_sources: Mapped[list["ArticleFollowUp"]] = relationship(
+        back_populates="source_article",
+        cascade="all, delete-orphan",
+        foreign_keys="ArticleFollowUp.source_article_id",
+    )
+    followup_results: Mapped[list["ArticleFollowUp"]] = relationship(
+        back_populates="result_article",
+        cascade="all, delete-orphan",
+        foreign_keys="ArticleFollowUp.result_article_id",
+    )
+
+
+class GenerationRun(Base):
+    __tablename__ = "generation_runs"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    title_hint: Mapped[str] = mapped_column(String(255), default="")
+    raw_content: Mapped[str] = mapped_column(Text, default="")
+    keywords_json: Mapped[str] = mapped_column(Text, default="[]")
+    target_platforms_json: Mapped[str] = mapped_column(Text, default="[]")
+    image_paths_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_type: Mapped[str] = mapped_column(String(50), default="manual")
+    source_ref: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    articles: Mapped[list["GenerationRunArticle"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class GenerationRunArticle(Base):
+    __tablename__ = "generation_run_articles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("generation_runs.id"), index=True)
+    article_id: Mapped[int] = mapped_column(ForeignKey("generated_articles.id"), index=True)
+    platform: Mapped[str] = mapped_column(String(50), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped[GenerationRun] = relationship(back_populates="articles")
+    article: Mapped[GeneratedArticle] = relationship(back_populates="generation_history_links")
+
+
+class ArticleFollowUp(Base):
+    __tablename__ = "article_followups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_article_id: Mapped[int] = mapped_column(ForeignKey("generated_articles.id"), index=True)
+    result_article_id: Mapped[int] = mapped_column(ForeignKey("generated_articles.id"), index=True)
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    source_article: Mapped[GeneratedArticle] = relationship(
+        back_populates="followup_sources",
+        foreign_keys=[source_article_id],
+    )
+    result_article: Mapped[GeneratedArticle] = relationship(
+        back_populates="followup_results",
+        foreign_keys=[result_article_id],
+    )
 
 
 class PublishTask(Base):

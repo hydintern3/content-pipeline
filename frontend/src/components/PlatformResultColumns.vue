@@ -21,7 +21,7 @@
       <article v-for="article in workspace.articles" :key="article.id" class="article-card">
         <header>
           <el-tag effect="dark">{{ platformLabels[article.platform] || article.platform }}</el-tag>
-          <small>{{ workspace.source === "llm" ? "大模型生成" : "模板兜底" }} · {{ article.format }}</small>
+          <small>{{ sourceLabel }} · {{ article.format }}</small>
           <el-tag
             v-if="articleComplianceResult(article.id)"
             :type="riskTagType(articleComplianceResult(article.id)?.risk_count || 0)"
@@ -50,8 +50,11 @@
         <footer>
           <el-button :icon="CopyDocument" @click="copy(article.content)">复制</el-button>
           <el-button :icon="Download" @click="publish([article.id], 'file')">导出</el-button>
-          <el-button :loading="checkingCompliance[article.id]" @click="runCompliance(article)">
-            合规检查
+          <el-button :loading="workspace.isFollowingUp(article.id)" @click="openFollowUp(article)">
+            追问优化
+          </el-button>
+          <el-button :loading="workspace.isCheckingCompliance(article.id)" @click="runCompliance(article)">
+            {{ articleComplianceResult(article.id) ? "重新检查" : "合规检查" }}
           </el-button>
           <el-button
             v-if="article.platform === 'official_account'"
@@ -117,24 +120,59 @@
         </p>
       </div>
     </div>
+
+    <el-dialog v-model="followUpOpen" title="追问优化" width="680px">
+      <div v-if="currentFollowUpArticle" class="follow-up-dialog">
+        <div class="follow-up-target">
+          <el-tag effect="dark">{{ platformLabels[currentFollowUpArticle.platform] || currentFollowUpArticle.platform }}</el-tag>
+          <strong>{{ currentFollowUpArticle.title }}</strong>
+        </div>
+        <el-input
+          v-model="followUpInstruction"
+          type="textarea"
+          :rows="5"
+          maxlength="800"
+          show-word-limit
+          placeholder="例如：把开头改得更直接；减少AI感；增加B端招商场景；改成更适合小红书的短笔记"
+        />
+        <div v-if="currentFollowUps.length" class="follow-up-records">
+          <h4>追问记录</h4>
+          <div v-for="item in currentFollowUps" :key="item.id" class="follow-up-record">
+            <p>{{ item.instruction }}</p>
+            <small>{{ item.model }} · {{ new Date(item.created_at).toLocaleString() }}</small>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="followUpOpen = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="!followUpInstruction.trim() || !currentFollowUpArticle"
+          :loading="currentFollowUpArticle ? workspace.isFollowingUp(currentFollowUpArticle.id) : false"
+          @click="submitFollowUp"
+        >
+          提交追问
+        </el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { CopyDocument, Download, FolderOpened } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
-import { checkArticleCompliance } from "@/api/client";
 import { platformLabels } from "@/constants";
 import { useWorkspaceStore } from "@/stores/workspace";
-import type { Article, ComplianceResult, Platform } from "@/types";
+import type { Article, Platform } from "@/types";
 import { previewHtmlWithRisks } from "@/utils/text";
 
 const workspace = useWorkspaceStore();
 const modes = reactive<Record<number, "preview" | "source">>({});
-const complianceByArticle = reactive<Record<number, ComplianceResult>>({});
-const checkingCompliance = reactive<Record<number, boolean>>({});
+const followUpOpen = ref(false);
+const followUpInstruction = ref("");
+const currentFollowUpArticle = ref<Article | null>(null);
 const riskTooltip = reactive({
   visible: false,
   x: 0,
@@ -144,6 +182,18 @@ const riskTooltip = reactive({
   suggestion: "",
 });
 const errorPlatforms = computed(() => Object.keys(workspace.generationErrors) as Platform[]);
+const currentFollowUps = computed(() =>
+  currentFollowUpArticle.value ? workspace.articleFollowUps(currentFollowUpArticle.value.id) : [],
+);
+const sourceLabel = computed(() => {
+  if (workspace.source === "llm") {
+    return "大模型生成";
+  }
+  if (workspace.source === "history") {
+    return "历史记录";
+  }
+  return "模板兜底";
+});
 
 watch(
   () => workspace.articles.map((article) => article.id),
@@ -152,10 +202,9 @@ watch(
     articleIds.forEach((articleId) => {
       modes[articleId] = modes[articleId] || "preview";
     });
-    Object.keys(complianceByArticle).forEach((articleId) => {
+    Object.keys(modes).forEach((articleId) => {
       if (!currentIds.has(Number(articleId))) {
-        delete complianceByArticle[Number(articleId)];
-        delete checkingCompliance[Number(articleId)];
+        delete modes[Number(articleId)];
       }
     });
   },
@@ -163,11 +212,11 @@ watch(
 );
 
 function articleComplianceResult(articleId: number) {
-  return complianceByArticle[articleId];
+  return workspace.articleComplianceResult(articleId);
 }
 
 function articlePreviewHtml(article: Article) {
-  return previewHtmlWithRisks(article.content, article.format, complianceByArticle[article.id]?.risks || []);
+  return previewHtmlWithRisks(article.content, article.format, workspace.articleComplianceResult(article.id)?.risks || []);
 }
 
 function riskTagType(riskCount: number) {
@@ -236,10 +285,8 @@ async function copy(content: string) {
 }
 
 async function runCompliance(article: Article) {
-  checkingCompliance[article.id] = true;
   try {
-    const result = await checkArticleCompliance(`${article.title}\n${article.content}`, article.platform);
-    complianceByArticle[article.id] = result;
+    const result = await workspace.runCompliance(article);
     if (result.risk_count > 0) {
       ElMessage.warning(`发现 ${result.risk_count} 个风险词，已在预览中标记`);
     } else {
@@ -247,8 +294,29 @@ async function runCompliance(article: Article) {
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "合规检查失败");
-  } finally {
-    checkingCompliance[article.id] = false;
+  }
+}
+
+function openFollowUp(article: Article) {
+  currentFollowUpArticle.value = article;
+  followUpInstruction.value = "";
+  followUpOpen.value = true;
+}
+
+async function submitFollowUp() {
+  const article = currentFollowUpArticle.value;
+  const instruction = followUpInstruction.value.trim();
+  if (!article || !instruction) {
+    ElMessage.warning("请先填写追问修改要求");
+    return;
+  }
+  try {
+    const payload = await workspace.followUpArticle(article, instruction);
+    currentFollowUpArticle.value = payload.article;
+    followUpInstruction.value = "";
+    ElMessage.success("已生成优化版本");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "追问优化失败");
   }
 }
 
