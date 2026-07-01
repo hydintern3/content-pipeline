@@ -186,6 +186,38 @@ class TaskJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class ObservabilityLog(Base):
+    __tablename__ = "observability_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    level: Mapped[str] = mapped_column(String(20), default="info", index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    path: Mapped[str] = mapped_column(String(255), default="", index=True)
+    method: Mapped[str] = mapped_column(String(16), default="")
+    status_code: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class LlmCallMetric(Base):
+    __tablename__ = "llm_call_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    operation: Mapped[str] = mapped_column(String(80), default="", index=True)
+    platform: Mapped[str] = mapped_column(String(50), default="", index=True)
+    model: Mapped[str] = mapped_column(String(120), default="", index=True)
+    success: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[str] = mapped_column(String(40), default="0")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ImageAsset(Base):
     __tablename__ = "image_assets"
 

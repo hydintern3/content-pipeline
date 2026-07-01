@@ -106,6 +106,53 @@ export interface TaskJob {
   finished_at?: string | null;
 }
 
+export interface ObservabilityLogItem {
+  id: number;
+  event_type: string;
+  level: string;
+  message: string;
+  path: string;
+  method: string;
+  status_code: number;
+  duration_ms: number;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface LlmCallMetricItem {
+  id: number;
+  operation: string;
+  platform: string;
+  model: string;
+  success: boolean;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: string;
+  error_message: string;
+  created_at: string;
+}
+
+export interface ObservabilitySummary {
+  window_hours: number;
+  requests: {
+    count: number;
+    error_count: number;
+    avg_latency_ms: number;
+  };
+  llm: {
+    count: number;
+    success_count: number;
+    error_count: number;
+    avg_latency_ms: number;
+    total_tokens: number;
+    estimated_cost_usd: string;
+  };
+  recent_logs: ObservabilityLogItem[];
+  recent_llm_calls: LlmCallMetricItem[];
+}
+
 export interface ImageVariant {
   id: number;
   platform: Platform;

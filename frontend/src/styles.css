@@ -87,7 +87,7 @@ textarea {
 
 .support-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 18px;
 }
 
@@ -201,6 +201,37 @@ textarea {
 
 .mb-10 {
   margin-bottom: 10px;
+}
+
+.mt-12 {
+  margin-top: 12px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.metric-tile {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.metric-tile span,
+.metric-tile small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.metric-tile strong {
+  color: #111827;
+  font-size: 20px;
+  line-height: 1.2;
 }
 
 .upload-row {

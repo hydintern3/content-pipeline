@@ -11,6 +11,7 @@
       <CompliancePanel />
       <BatchJobPanel />
       <ImageWorkflowPanel />
+      <ObservabilityPanel />
     </section>
 
     <TaskHistoryPanel />
@@ -25,6 +26,7 @@ const CompliancePanel = defineAsyncComponent(() => import("@/components/Complian
 const GenerationHistoryPanel = defineAsyncComponent(() => import("@/components/GenerationHistoryPanel.vue"));
 const ImageWorkflowPanel = defineAsyncComponent(() => import("@/components/ImageWorkflowPanel.vue"));
 const MaterialInputPanel = defineAsyncComponent(() => import("@/components/MaterialInputPanel.vue"));
+const ObservabilityPanel = defineAsyncComponent(() => import("@/components/ObservabilityPanel.vue"));
 const PlatformResultColumns = defineAsyncComponent(() => import("@/components/PlatformResultColumns.vue"));
 const TaskHistoryPanel = defineAsyncComponent(() => import("@/components/TaskHistoryPanel.vue"));
 </script>

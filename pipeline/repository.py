@@ -28,6 +28,7 @@ def create_articles(
     session: Session,
     material: Material,
     drafts: dict[str, ArticleDraft],
+    status: str = "generated",
 ) -> list[GeneratedArticle]:
     articles: list[GeneratedArticle] = []
     for draft in drafts.values():
@@ -37,7 +38,7 @@ def create_articles(
             title=draft.title,
             content=draft.content,
             content_format=draft.content_format,
-            status="generated",
+            status=status,
         )
         session.add(article)
         articles.append(article)

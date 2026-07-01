@@ -26,7 +26,9 @@ from pipeline.generation import (
     build_user_prompt,
     generate_drafts,
     material_for_platform,
+    parse_variant_json,
 )
+from pipeline.observability import estimate_llm_cost_usd
 from pipeline.publishers import (
     WECHAT_TITLE_MAX_BYTES,
     choose_publish_mode,
@@ -222,6 +224,32 @@ def test_generate_drafts_supports_zhihu_qa_fallback(tmp_path):
     assert set(drafts) == {"zhihu_qa"}
     assert drafts["zhihu_qa"].content_format == "markdown"
     assert "问题：" in drafts["zhihu_qa"].content
+
+
+def test_parse_variant_json_returns_requested_platform_variants():
+    drafts = parse_variant_json(
+        json.dumps(
+            {
+                "variants": [
+                    {"angle": "避坑", "title": "标题A", "content": "正文A", "format": "markdown"},
+                    {"angle": "教程", "title": "标题B", "content": "正文B", "format": "markdown"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        "toutiao",
+        2,
+    )
+
+    assert [draft.platform for draft in drafts] == ["toutiao", "toutiao"]
+    assert drafts[0].title.endswith("｜避坑")
+    assert drafts[1].content == "正文B"
+
+
+def test_llm_cost_estimate_uses_model_price_table():
+    cost = estimate_llm_cost_usd("gpt-4o-mini", prompt_tokens=1_000_000, completion_tokens=1_000_000)
+
+    assert str(cost) == "0.750000"
 
 
 def test_generation_history_groups_split_platform_requests(tmp_path):

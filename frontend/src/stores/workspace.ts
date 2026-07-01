@@ -4,6 +4,7 @@ import { defineStore } from "pinia";
 import {
   checkArticleCompliance,
   createGenerationJob,
+  createVariantGenerationJob,
   fetchTasks,
   followUpArticle as followUpArticleRequest,
   generateMaterial,
@@ -32,6 +33,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     image_paths: "",
     target_platforms: ["xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"] as Platform[],
   });
+  const generationMode = ref<"standard" | "variants">("standard");
+  const variantPlatform = ref<Platform>("xiaohongshu");
+  const variantCount = ref(3);
   const articles = ref<Article[]>([]);
   const tasks = ref<PublishTask[]>([]);
   const source = ref("");
@@ -336,7 +340,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   async function generate() {
     const configStore = useConfigStore();
     const baseMaterial = materialPayload();
-    const platforms = [...baseMaterial.target_platforms];
+    const platforms = generationMode.value === "variants" ? [variantPlatform.value] : [...baseMaterial.target_platforms];
     const historyRunId = createHistoryRunId();
     generating.value = true;
     generatingPlatforms.value = [...platforms];
@@ -348,11 +352,20 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     followUpsByArticle.value = {};
     followingUpArticleIds.value = {};
     try {
-      const task = await createGenerationJob(
-        baseMaterial,
-        configStore.requestConfig(),
-        { runId: historyRunId, expectedPlatforms: platforms },
-      );
+      const task =
+        generationMode.value === "variants"
+          ? await createVariantGenerationJob(
+              { ...baseMaterial, target_platforms: [variantPlatform.value] },
+              variantPlatform.value,
+              variantCount.value,
+              configStore.requestConfig(),
+              { runId: historyRunId },
+            )
+          : await createGenerationJob(
+              baseMaterial,
+              configStore.requestConfig(),
+              { runId: historyRunId, expectedPlatforms: platforms },
+            );
       generationTask.value = task;
       const completedTask = await waitForGenerationTask(task.id);
       if (completedTask.status === "failed") {
@@ -454,6 +467,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       image_paths: "",
       target_platforms: ["xiaohongshu", "zhihu", "official_account", "toutiao", "shipinhao"],
     };
+    generationMode.value = "standard";
+    variantPlatform.value = "xiaohongshu";
+    variantCount.value = 3;
     articles.value = [];
     source.value = "";
     generationErrors.value = {};
@@ -493,6 +509,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   return {
     material,
+    generationMode,
+    variantPlatform,
+    variantCount,
     articles,
     tasks,
     source,

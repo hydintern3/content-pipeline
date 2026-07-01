@@ -34,7 +34,30 @@
         </el-form-item>
       </div>
 
-      <el-form-item label="目标平台">
+      <el-form-item label="生成模式">
+        <el-radio-group v-model="workspace.generationMode">
+          <el-radio-button label="standard">多平台生成</el-radio-button>
+          <el-radio-button label="variants">内容变体</el-radio-button>
+        </el-radio-group>
+      </el-form-item>
+
+      <div v-if="workspace.generationMode === 'variants'" class="two-col">
+        <el-form-item label="变体平台">
+          <el-select v-model="workspace.variantPlatform">
+            <el-option
+              v-for="platform in platformOptions"
+              :key="platform.value"
+              :label="platform.label"
+              :value="platform.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="变体数量">
+          <el-input-number v-model="workspace.variantCount" :min="1" :max="10" />
+        </el-form-item>
+      </div>
+
+      <el-form-item v-else label="目标平台">
         <el-checkbox-group v-model="workspace.material.target_platforms">
           <el-checkbox-button
             v-for="platform in platformOptions"
@@ -79,7 +102,7 @@ async function generate() {
     ElMessage.warning("标题和素材正文不能为空");
     return;
   }
-  if (!workspace.material.target_platforms.length) {
+  if (workspace.generationMode === "standard" && !workspace.material.target_platforms.length) {
     ElMessage.warning("至少选择一个平台");
     return;
   }
@@ -88,7 +111,7 @@ async function generate() {
     if (result?.failedCount) {
       ElMessage.warning(`已生成，${result.failedCount} 个平台失败`);
     } else {
-      ElMessage.success("稿件已生成");
+      ElMessage.success(workspace.generationMode === "variants" ? "内容变体已生成" : "稿件已生成");
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "生成失败");

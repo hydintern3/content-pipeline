@@ -11,6 +11,7 @@ import type {
   ImageAsset,
   MaterialPayload,
   MaterialRecord,
+  ObservabilitySummary,
   Platform,
   PublishTask,
   TaskJob,
@@ -67,6 +68,25 @@ export async function createGenerationJob(
       config,
       history_run_id: history?.runId,
       history_expected_platforms: history?.expectedPlatforms,
+    }),
+  );
+  return payload.task as TaskJob;
+}
+
+export async function createVariantGenerationJob(
+  material: MaterialPayload,
+  platform: Platform,
+  count: number,
+  config: object,
+  history?: { runId: string },
+) {
+  const payload = await unwrap(
+    http.post("/api/materials/generate_variants_job", {
+      material,
+      platform,
+      count,
+      config,
+      history_run_id: history?.runId,
     }),
   );
   return payload.task as TaskJob;
@@ -211,4 +231,9 @@ export async function fetchGenerationHistory(params: { limit?: number; offset?: 
 export async function fetchGenerationHistoryDetail(runId: string) {
   const payload = await unwrap(http.get(`/api/history/generations/${encodeURIComponent(runId)}`));
   return payload.item as GenerationHistoryDetail;
+}
+
+export async function fetchObservabilitySummary(hours = 24, limit = 50) {
+  const payload = await unwrap(http.get(`/api/observability/summary?hours=${hours}&limit=${limit}`));
+  return payload.data as ObservabilitySummary;
 }

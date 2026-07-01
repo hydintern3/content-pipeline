@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import re
+import time
+from typing import Any, Callable
 
 from openai import AsyncOpenAI
 
@@ -16,6 +18,7 @@ from .schemas import ArticleDraft, MaterialInput
 LOGGER = logging.getLogger(__name__)
 LLM_TIMEOUT_SECONDS = int(os.getenv("CONTENT_LLM_TIMEOUT_SECONDS", "120"))
 LLM_MAX_RETRIES = int(os.getenv("CONTENT_LLM_MAX_RETRIES", "1"))
+LLM_OBSERVER: Callable[[dict[str, Any]], None] | None = None
 
 PLATFORM_FORMATS = {
     "xiaohongshu": "text",
@@ -25,6 +28,39 @@ PLATFORM_FORMATS = {
     "toutiao": "markdown",
     "shipinhao": "script",
 }
+
+VARIANT_ANGLES = [
+    "痛点拆解",
+    "场景化经验",
+    "避坑提醒",
+    "操作教程",
+    "趋势观察",
+    "案例复盘",
+    "清单总结",
+    "反常识观点",
+]
+
+
+def set_llm_observer(observer: Callable[[dict[str, Any]], None] | None) -> None:
+    global LLM_OBSERVER
+    LLM_OBSERVER = observer
+
+
+def emit_llm_metric(metric: dict[str, Any]) -> None:
+    if not LLM_OBSERVER:
+        return
+    try:
+        LLM_OBSERVER(metric)
+    except Exception:
+        LOGGER.debug("LLM observer failed", exc_info=True)
+
+
+def usage_tokens(response: Any) -> tuple[int, int, int]:
+    usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+    return prompt_tokens, completion_tokens, total_tokens
 
 FOLLOW_UP_PLATFORM_SUMMARIES = {
     "xiaohongshu": "小红书短笔记：轻量、场景化、标题有痛点，避免硬广和长篇大论。",
@@ -191,6 +227,72 @@ def build_user_prompt(material: MaterialInput) -> str:
 }}"""
 
 
+def build_variant_user_prompt(material: MaterialInput, platform: str, count: int) -> str:
+    keywords = ", ".join(material.keywords) or "无"
+    angle_hints = "、".join(VARIANT_ANGLES[: max(1, min(count, len(VARIANT_ANGLES)))])
+    return f"""请基于同一份素材，为一个指定平台生成 {count} 个内容变体。
+目标平台：{platform}
+标题/选题提示：{material.title_hint}
+关键词：{keywords}
+素材正文：
+{material.raw_content}
+
+平台规则：
+{PLATFORM_RULES.get(platform, "").strip()}
+
+变体要求：
+- 每个变体必须是同一平台、不同切入角度，不要只是替换同义词。
+- 角度可参考：{angle_hints}，也可以根据素材选择更合适的角度。
+- 每个变体都必须遵守平台风格、B 端语境、合规要求和去 AI 化要求。
+- 不要编造素材中没有的数据、案例、政策或客户名称。
+- format 必须是：{PLATFORM_FORMATS.get(platform, "text")}。
+
+严格返回 JSON 对象，不要 Markdown 代码块：
+{{
+  "variants": [
+    {{"angle": "切入角度", "title": "标题", "content": "正文", "format": "{PLATFORM_FORMATS.get(platform, "text")}"}}
+  ]
+}}"""
+
+
+def parse_variant_json(raw_text: str, platform: str, count: int) -> list[ArticleDraft]:
+    text = raw_text.strip()
+    fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fenced_match:
+        text = fenced_match.group(1).strip()
+
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("variants"), list):
+        raise ValueError("大模型返回内容不是 variants JSON 对象")
+
+    drafts: list[ArticleDraft] = []
+    for index, item in enumerate(parsed["variants"][:count], start=1):
+        if not isinstance(item, dict):
+            continue
+        angle = str(item.get("angle") or f"变体 {index}").strip()
+        title = str(item.get("title") or "").strip()
+        content = str(item.get("content") or "").strip()
+        content_format = str(item.get("format") or PLATFORM_FORMATS.get(platform, "text")).strip()
+        if not title or not content:
+            continue
+        drafts.append(ArticleDraft(platform, f"{title}｜{angle}", content, content_format))
+
+    if not drafts:
+        raise ValueError("大模型返回的变体内容不完整")
+    return drafts[:count]
+
+
+def fallback_variant_drafts(material: MaterialInput, platform: str, count: int) -> list[ArticleDraft]:
+    base = fallback_draft(material_for_platform(material, platform), platform)
+    drafts: list[ArticleDraft] = []
+    for index in range(max(1, count)):
+        angle = VARIANT_ANGLES[index % len(VARIANT_ANGLES)]
+        title = f"{base.title}｜{angle}"
+        content = f"{base.content}\n\n【变体角度】{angle}\n请人工复核后补充更贴近该角度的细节。"
+        drafts.append(ArticleDraft(platform, title, content, base.content_format))
+    return drafts
+
+
 def material_for_platform(material: MaterialInput, platform: str) -> MaterialInput:
     return MaterialInput(
         title_hint=material.title_hint,
@@ -288,14 +390,41 @@ async def generate_with_llm(material: MaterialInput, config: AppConfig) -> dict[
         timeout=LLM_TIMEOUT_SECONDS,
         max_retries=LLM_MAX_RETRIES,
     )
-    response = await client.chat.completions.create(
-        model=config.llm_model,
-        messages=[
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": build_user_prompt(material)},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.82,
+    started = time.perf_counter()
+    try:
+        response = await client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {"role": "system", "content": build_system_prompt()},
+                {"role": "user", "content": build_user_prompt(material)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.82,
+        )
+    except Exception as exc:
+        emit_llm_metric(
+            {
+                "operation": "generation_batch",
+                "platform": ",".join(material.target_platforms),
+                "model": config.llm_model,
+                "success": False,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "error_message": str(exc),
+            }
+        )
+        raise
+    prompt_tokens, completion_tokens, total_tokens = usage_tokens(response)
+    emit_llm_metric(
+        {
+            "operation": "generation_batch",
+            "platform": ",".join(material.target_platforms),
+            "model": config.llm_model,
+            "success": True,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
     )
     raw_text = response.choices[0].message.content or ""
     return parse_llm_json(raw_text, material.target_platforms)
@@ -308,11 +437,39 @@ async def follow_up_article_with_llm_async(article: object, instruction: str, co
         timeout=LLM_TIMEOUT_SECONDS,
         max_retries=LLM_MAX_RETRIES,
     )
-    response = await client.chat.completions.create(
-        model=config.llm_model,
-        messages=build_follow_up_messages(article, instruction),
-        response_format={"type": "json_object"},
-        temperature=0.45,
+    started = time.perf_counter()
+    platform = str(getattr(article, "platform", "") or "")
+    try:
+        response = await client.chat.completions.create(
+            model=config.llm_model,
+            messages=build_follow_up_messages(article, instruction),
+            response_format={"type": "json_object"},
+            temperature=0.45,
+        )
+    except Exception as exc:
+        emit_llm_metric(
+            {
+                "operation": "follow_up",
+                "platform": platform,
+                "model": config.llm_model,
+                "success": False,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "error_message": str(exc),
+            }
+        )
+        raise
+    prompt_tokens, completion_tokens, total_tokens = usage_tokens(response)
+    emit_llm_metric(
+        {
+            "operation": "follow_up",
+            "platform": platform,
+            "model": config.llm_model,
+            "success": True,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
     )
     raw_text = response.choices[0].message.content or ""
     return parse_follow_up_json(raw_text, article)
@@ -331,14 +488,41 @@ async def generate_platform_with_llm(
     platform: str,
 ) -> ArticleDraft:
     platform_material = material_for_platform(material, platform)
-    response = await client.chat.completions.create(
-        model=config.llm_model,
-        messages=[
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": build_user_prompt(platform_material)},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.82,
+    started = time.perf_counter()
+    try:
+        response = await client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {"role": "system", "content": build_system_prompt()},
+                {"role": "user", "content": build_user_prompt(platform_material)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.82,
+        )
+    except Exception as exc:
+        emit_llm_metric(
+            {
+                "operation": "generation",
+                "platform": platform,
+                "model": config.llm_model,
+                "success": False,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "error_message": str(exc),
+            }
+        )
+        raise
+    prompt_tokens, completion_tokens, total_tokens = usage_tokens(response)
+    emit_llm_metric(
+        {
+            "operation": "generation",
+            "platform": platform,
+            "model": config.llm_model,
+            "success": True,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
     )
     raw_text = response.choices[0].message.content or ""
     return parse_llm_json(raw_text, [platform])[platform]
@@ -361,6 +545,74 @@ async def generate_each_platform_with_llm(material: MaterialInput, config: AppCo
 
     results = await asyncio.gather(*(_generate_one(p) for p in material.target_platforms))
     return dict(results)
+
+
+async def generate_variants_with_llm(
+    material: MaterialInput,
+    config: AppConfig,
+    platform: str,
+    count: int,
+) -> list[ArticleDraft]:
+    client = AsyncOpenAI(
+        api_key=config.llm_api_key,
+        base_url=config.llm_base_url,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=LLM_MAX_RETRIES,
+    )
+    variant_material = material_for_platform(material, platform)
+    started = time.perf_counter()
+    try:
+        response = await client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {"role": "system", "content": build_system_prompt()},
+                {"role": "user", "content": build_variant_user_prompt(variant_material, platform, count)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.9,
+        )
+    except Exception as exc:
+        emit_llm_metric(
+            {
+                "operation": "variant_generation",
+                "platform": platform,
+                "model": config.llm_model,
+                "success": False,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "error_message": str(exc),
+            }
+        )
+        raise
+    prompt_tokens, completion_tokens, total_tokens = usage_tokens(response)
+    emit_llm_metric(
+        {
+            "operation": "variant_generation",
+            "platform": platform,
+            "model": config.llm_model,
+            "success": True,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+    )
+    raw_text = response.choices[0].message.content or ""
+    return parse_variant_json(raw_text, platform, count)
+
+
+def generate_variants(
+    material: MaterialInput,
+    config: AppConfig,
+    platform: str,
+    count: int,
+) -> tuple[str, list[ArticleDraft]]:
+    safe_count = max(1, min(int(count or 3), 10))
+    if config.has_llm:
+        try:
+            return "llm_variants", asyncio.run(generate_variants_with_llm(material, config, platform, safe_count))
+        except Exception as exc:
+            LOGGER.exception("LLM variant generation failed; using fallback variants: %s", exc)
+    return "fallback_variants", fallback_variant_drafts(material, platform, safe_count)
 
 
 def generate_drafts(material: MaterialInput, config: AppConfig) -> tuple[str, dict[str, ArticleDraft]]:

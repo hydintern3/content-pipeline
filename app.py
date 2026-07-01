@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
+from flask import Flask, Response, g, jsonify, request, send_from_directory, stream_with_context
 from sqlalchemy import select
 from werkzeug.utils import secure_filename
 
@@ -19,10 +19,17 @@ from pipeline.batch import batch_job_payload, create_batch_job, parse_batch_file
 from pipeline.compliance import check_articles, check_text
 from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
 from pipeline.database import create_app_engine, create_session_factory, init_database, session_scope
-from pipeline.generation import follow_up_article_with_llm, generate_drafts, material_for_platform
+from pipeline.generation import (
+    follow_up_article_with_llm,
+    generate_drafts,
+    generate_variants,
+    material_for_platform,
+    set_llm_observer,
+)
 from pipeline.image_processing import process_image
 from pipeline.ingestion import fetch_recent_materials
 from pipeline.models import BatchJob, ImageAsset, ImageVariant, TaskJob
+from pipeline.observability import observability_summary, record_llm_call, record_log
 from pipeline.publishers import publish_article
 from pipeline.repository import (
     article_payload,
@@ -70,6 +77,7 @@ except Exception:
 SessionLocal = create_session_factory(engine)
 scheduler = start_scheduler(config, SessionLocal)
 task_queue = TaskQueue(SessionLocal)
+set_llm_observer(lambda metric: record_llm_call(SessionLocal, metric))
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
@@ -97,6 +105,31 @@ IMAGE_OUTPUT_DIR = writable_runtime_dir("images", BASE_DIR / "data" / "images")
 
 app = Flask(__name__, static_folder=None)
 HISTORY_LOCK = Lock()
+
+
+@app.before_request
+def start_request_timer():
+    g.request_started_at = time.perf_counter()
+
+
+@app.after_request
+def record_request_observability(response):
+    started = getattr(g, "request_started_at", None)
+    duration_ms = int((time.perf_counter() - started) * 1000) if started else 0
+    if request.path.startswith("/api/"):
+        level = "error" if response.status_code >= 500 else "warning" if response.status_code >= 400 else "info"
+        record_log(
+            SessionLocal,
+            event_type="api_request",
+            level=level,
+            message=f"{request.method} {request.path} {response.status_code}",
+            path=request.path,
+            method=request.method,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            details={"query": request.query_string.decode("utf-8", errors="ignore")},
+        )
+    return response
 
 
 def ok(payload: dict[str, Any]):
@@ -367,6 +400,42 @@ def generation_task_handler(payload: dict[str, Any], request_config: Any):
     return run
 
 
+def variant_generation_task_handler(payload: dict[str, Any], request_config: Any):
+    material_input = normalize_material(payload.get("material") or payload)
+    platform = clean_text(payload.get("platform")) or (material_input.target_platforms[0] if material_input.target_platforms else "")
+    if not platform:
+        raise ValueError("缺少变体生成平台")
+    try:
+        count = max(1, min(int(payload.get("count") or 3), 10))
+    except (TypeError, ValueError):
+        count = 3
+    history_run_id = clean_text(payload.get("history_run_id"))[:80]
+
+    def run(progress):
+        progress.update(0, count, "内容变体任务开始执行")
+        source, drafts = generate_variants(material_input, request_config, platform, count)
+        progress.update(max(1, count - 1), count, "正在保存变体结果")
+        draft_map = {f"{platform}_{index}": draft for index, draft in enumerate(drafts, start=1)}
+        with session_scope(SessionLocal) as session:
+            material = create_material(session, material_for_platform(material_input, platform))
+            articles = create_articles(session, material, draft_map, status="variant")
+            if history_run_id:
+                with HISTORY_LOCK:
+                    run_record = get_or_create_generation_run(session, history_run_id, material_input, [platform])
+                    link_generation_articles(session, run_record, articles)
+            result = {
+                "source": source,
+                "material": material_payload(material),
+                "articles": [article_payload(article) for article in articles],
+                "errors": {},
+                "failed_count": 0,
+            }
+        progress.update(count, count, f"已生成 {len(result['articles'])} 个内容变体")
+        return result
+
+    return run
+
+
 def task_event_stream(task_id: str):
     last_payload = ""
     while True:
@@ -491,6 +560,30 @@ def create_generation_job():
         return error(f"生成任务创建失败：{exc}", 500)
 
 
+@app.post("/api/materials/generate_variants_job")
+def create_variant_generation_job():
+    try:
+        payload = request.get_json(silent=True) or {}
+        material_input = normalize_material(payload.get("material") or payload)
+        platform = clean_text(payload.get("platform")) or (material_input.target_platforms[0] if material_input.target_platforms else "")
+        if not platform:
+            return error("缺少变体生成平台", 400)
+        count = max(1, min(int(payload.get("count") or 3), 10))
+        request_config = config_for_request(payload)
+        task = task_queue.enqueue(
+            "variant_generation",
+            variant_generation_task_handler(payload, request_config),
+            total=count,
+            message="内容变体任务已进入队列",
+        )
+        return ok({"task": task_job_payload(task)})
+    except ValueError as exc:
+        return error(str(exc), 400)
+    except Exception as exc:
+        LOGGER.exception("Variant generation job creation failed")
+        return error(f"内容变体任务创建失败：{exc}", 500)
+
+
 @app.get("/api/task_jobs/<task_id>")
 def get_task_job(task_id: str):
     with session_scope(SessionLocal) as session:
@@ -507,6 +600,14 @@ def stream_task_job(task_id: str):
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/observability/summary")
+def get_observability_summary():
+    hours = int(request.args.get("hours") or 24)
+    limit = int(request.args.get("limit") or 50)
+    with session_scope(SessionLocal) as session:
+        return ok({"data": observability_summary(session, hours=hours, limit=max(1, min(limit, 100)))})
 
 
 @app.post("/api/materials/pull_recent")
