@@ -347,6 +347,62 @@ def config_from_form() -> Any:
     return config_for_request({"config": parsed})
 
 
+def config_payload(app_config: Any) -> dict[str, Any]:
+    return {
+        "app_database_url": app_config.app_database_url,
+        "llm": {
+            "api_key": app_config.llm_api_key,
+            "base_url": app_config.llm_base_url,
+            "model": app_config.llm_model,
+        },
+        "generation": {
+            "concurrency": app_config.generation_concurrency,
+        },
+        "compliance": {
+            "mock": app_config.compliance_mock,
+            "llm_model": app_config.compliance_llm_model,
+            "cache_size": app_config.compliance_cache_size,
+            "auto_check": app_config.compliance_auto_check,
+            "concurrency": app_config.compliance_concurrency,
+        },
+        "database": {
+            "url": app_config.external_database_url,
+        },
+        "publish": {
+            "pending_output_dir": str(app_config.pending_output_dir),
+        },
+        "wechat": {
+            "app_id": app_config.wechat_app_id,
+            "app_secret": app_config.wechat_app_secret,
+            "auto_publish": app_config.wechat_auto_publish,
+            "enable_mass_send": app_config.wechat_enable_mass_send,
+        },
+        "scheduler": {
+            "enabled": app_config.scheduler_enabled,
+            "interval_minutes": app_config.scheduler_interval_minutes,
+        },
+    }
+
+
+def task_priority(payload: dict[str, Any], default: int = 5) -> int:
+    try:
+        return max(0, min(9, int(payload.get("priority", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def task_max_retries(payload: dict[str, Any], default: int = 3) -> int:
+    try:
+        return max(0, min(10, int(payload.get("max_retries", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def task_queue_name(payload: dict[str, Any]) -> str | None:
+    value = clean_text(payload.get("queue_name"))
+    return value or None
+
+
 def generation_task_handler(payload: dict[str, Any], request_config: Any):
     material_input = normalize_material(payload.get("material") or payload)
     history_run_id = clean_text(payload.get("history_run_id"))[:80]
@@ -548,8 +604,12 @@ def create_generation_job():
         request_config = config_for_request(payload)
         task = task_queue.enqueue(
             "material_generation",
-            generation_task_handler(payload, request_config),
+            payload,
+            config_payload(request_config),
             total=len(material_input.target_platforms),
+            priority=task_priority(payload),
+            queue_name=task_queue_name(payload),
+            max_retries=task_max_retries(payload),
             message="生成任务已进入队列",
         )
         return ok({"task": task_job_payload(task)})
@@ -572,8 +632,12 @@ def create_variant_generation_job():
         request_config = config_for_request(payload)
         task = task_queue.enqueue(
             "variant_generation",
-            variant_generation_task_handler(payload, request_config),
+            payload,
+            config_payload(request_config),
             total=count,
+            priority=task_priority(payload),
+            queue_name=task_queue_name(payload),
+            max_retries=task_max_retries(payload),
             message="内容变体任务已进入队列",
         )
         return ok({"task": task_job_payload(task)})
@@ -773,16 +837,22 @@ def batch_generate():
         if not materials:
             return error("文件中没有可用素材")
         request_config = config_from_form()
+        batch_task_options = {
+            "priority": request.form.get("priority"),
+            "queue_name": request.form.get("queue_name"),
+            "max_retries": request.form.get("max_retries"),
+        }
         with session_scope(SessionLocal) as session:
             job = create_batch_job(session, uploaded_file.filename, materials)
             job_id = job.id
         task = task_queue.enqueue(
             "batch_generation",
-            lambda progress: (
-                process_batch_job(job_id, request_config, SessionLocal, progress.update)
-                or {"batch_job_id": job_id}
-            ),
+            {"batch_job_id": job_id},
+            config_payload(request_config),
             total=len(materials),
+            priority=task_priority(batch_task_options, default=4),
+            queue_name=task_queue_name(batch_task_options),
+            max_retries=task_max_retries(batch_task_options),
             message="批量生成任务已进入队列",
         )
         with session_scope(SessionLocal) as session:
@@ -890,7 +960,7 @@ def serve_frontend(path: str = ""):
     if path.startswith("api/"):
         return error("API endpoint not found", 404)
 
-    if FRONTEND_DIST.exists():
+    if (FRONTEND_DIST / "index.html").is_file():
         requested_file = FRONTEND_DIST / path
         if path and requested_file.is_file():
             return send_from_directory(FRONTEND_DIST, path)

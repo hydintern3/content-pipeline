@@ -92,6 +92,11 @@ export interface TaskJob {
   id: string;
   type: string;
   status: "pending" | "running" | "success" | "failed" | string;
+  celery_task_id?: string;
+  queue_name?: string;
+  priority?: number;
+  retry_count?: number;
+  max_retries?: number;
   progress: {
     current: number;
     total: number;
