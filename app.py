@@ -12,13 +12,13 @@ from threading import Lock
 from typing import Any
 
 from flask import Flask, Response, g, jsonify, request, send_from_directory, stream_with_context
-from sqlalchemy import select
+from sqlalchemy import select, text
 from werkzeug.utils import secure_filename
 
 from pipeline.batch import batch_job_payload, create_batch_job, parse_batch_file, process_batch_job
 from pipeline.compliance import check_articles, check_text
 from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
-from pipeline.database import create_app_engine, create_session_factory, init_database, session_scope
+from pipeline.database import create_app_engine, create_session_factory, init_database, is_sqlite_url, session_scope
 from pipeline.generation import (
     follow_up_article_with_llm,
     generate_drafts,
@@ -65,6 +65,8 @@ engine = create_app_engine(config)
 try:
     init_database(engine)
 except Exception:
+    if not is_sqlite_url(config.app_database_url):
+        raise
     logging.getLogger("content_pipeline").warning(
         "Database initialization failed for %s; falling back to a temporary writable database.",
         config.app_database_url,
@@ -508,6 +510,17 @@ def task_event_stream(task_id: str):
         if status in {"success", "failed"}:
             return
         time.sleep(1)
+
+
+@app.get("/api/health")
+def health_check():
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        LOGGER.exception("Health check failed")
+        return error(f"database unavailable: {exc}", 503)
+    return ok({"status": "ok", "database": engine.dialect.name})
 
 
 @app.get("/api/config/status")
