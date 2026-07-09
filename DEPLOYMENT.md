@@ -32,6 +32,7 @@ POSTGRES_PASSWORD=replace-with-a-strong-password
 CONTENT_LLM_API_KEY=sk-...
 CONTENT_LLM_BASE_URL=https://api.openai.com/v1
 CONTENT_LLM_MODEL=gpt-4o-mini
+DATABASE_URL=mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4
 APP_PORT=5000
 CELERY_WORKER_CONCURRENCY=2
 ```
@@ -47,6 +48,33 @@ postgresql+psycopg://content_pipeline:content_pipeline@postgres:5432/content_pip
 ```
 
 For external managed PostgreSQL, replace it with your provider URL and keep the `postgresql+psycopg://` driver prefix. The app also accepts `postgres://` and `postgresql://` and normalizes them to the psycopg driver.
+
+## External Source MySQL
+
+`APP_DATABASE_URL` and `DATABASE_URL` are separate connections:
+
+- `APP_DATABASE_URL`: the pipeline application's primary PostgreSQL database for tasks, articles, logs, and generated history.
+- `DATABASE_URL`: the external MySQL source database used by `POST /api/materials/pull_recent`.
+
+For the Shangying mini-program source database, set:
+
+```text
+DATABASE_URL=mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4
+```
+
+In Docker Compose, this value is passed to both `web` and `worker`. If you configure the app with `config.json` instead of environment variables, use:
+
+```json
+{
+  "database": {
+    "url": "mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4"
+  }
+}
+```
+
+`config.shangying.example.json` contains the same PostgreSQL + Shangying MySQL layout and can be copied to `config.json` before replacing passwords.
+
+Environment variables take precedence over `config.json`, so a non-empty `DATABASE_URL` in `.env` overrides `database.url`.
 
 Database connection pool settings:
 

@@ -17,7 +17,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py config.example.json README.md ./
+COPY app.py config*.example.json README.md ./
 COPY pipeline/ ./pipeline/
 COPY scripts/ ./scripts/
 COPY doc/ ./doc/

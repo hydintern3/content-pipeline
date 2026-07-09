@@ -136,11 +136,11 @@ python app.py
 ```text
 CONTENT_PIPELINE_CONFIG=E:\workspace\work\运营agent\content_pipeline\config.json
 CONTENT_PIPELINE_ENV=.env
-APP_DATABASE_URL=sqlite:///data/pipeline.db
+APP_DATABASE_URL=postgresql+psycopg://content_pipeline:replace-with-password@postgres:5432/content_pipeline
 CONTENT_LLM_API_KEY=sk-...
 CONTENT_LLM_BASE_URL=https://api.openai.com/v1
 CONTENT_LLM_MODEL=gpt-4o-mini
-DATABASE_URL=mysql+pymysql://user:password@127.0.0.1:3306/operation_agent?charset=utf8mb4
+DATABASE_URL=mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4
 WECHAT_APP_ID=...
 WECHAT_APP_SECRET=...
 WECHAT_AUTO_PUBLISH=false
