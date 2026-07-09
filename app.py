@@ -17,7 +17,7 @@ from werkzeug.utils import secure_filename
 
 from pipeline.batch import batch_job_payload, create_batch_job, parse_batch_file, process_batch_job
 from pipeline.compliance import check_articles, check_text
-from pipeline.config import build_config, config_from_dict, default_json_config, load_json_config
+from pipeline.config import build_config, config_from_dict, default_json_config, env_value, load_json_config
 from pipeline.database import create_app_engine, create_session_factory, init_database, is_sqlite_url, session_scope
 from pipeline.generation import (
     follow_up_article_with_llm,
@@ -144,24 +144,24 @@ def error(message: str, status: int = 400):
 
 def env_overrides() -> dict[str, bool]:
     return {
-        "app_database_url": os.getenv("APP_DATABASE_URL") is not None,
-        "llm_api_key": os.getenv("CONTENT_LLM_API_KEY") is not None,
-        "llm_base_url": os.getenv("CONTENT_LLM_BASE_URL") is not None,
-        "llm_model": os.getenv("CONTENT_LLM_MODEL") is not None,
-        "generation_concurrency": os.getenv("CONTENT_GENERATION_CONCURRENCY") is not None,
-        "compliance_mock": os.getenv("CONTENT_LLM_MOCK") is not None,
-        "compliance_llm_model": os.getenv("CONTENT_LLM_COMPLIANCE_MODEL") is not None,
-        "compliance_cache_size": os.getenv("CONTENT_COMPLIANCE_CACHE_SIZE") is not None,
-        "compliance_auto_check": os.getenv("CONTENT_COMPLIANCE_AUTO_CHECK") is not None,
-        "compliance_concurrency": os.getenv("CONTENT_COMPLIANCE_CONCURRENCY") is not None,
-        "external_database_url": os.getenv("DATABASE_URL") is not None,
-        "pending_output_dir": os.getenv("PENDING_OUTPUT_DIR") is not None,
-        "wechat_app_id": os.getenv("WECHAT_APP_ID") is not None,
-        "wechat_app_secret": os.getenv("WECHAT_APP_SECRET") is not None,
-        "wechat_auto_publish": os.getenv("WECHAT_AUTO_PUBLISH") is not None,
-        "wechat_enable_mass_send": os.getenv("WECHAT_ENABLE_MASS_SEND") is not None,
-        "scheduler_enabled": os.getenv("SCHEDULER_ENABLED") is not None,
-        "scheduler_interval_minutes": os.getenv("SCHEDULER_INTERVAL_MINUTES") is not None,
+        "app_database_url": env_value("APP_DATABASE_URL") is not None,
+        "llm_api_key": env_value("CONTENT_LLM_API_KEY") is not None,
+        "llm_base_url": env_value("CONTENT_LLM_BASE_URL") is not None,
+        "llm_model": env_value("CONTENT_LLM_MODEL") is not None,
+        "generation_concurrency": env_value("CONTENT_GENERATION_CONCURRENCY") is not None,
+        "compliance_mock": env_value("CONTENT_LLM_MOCK") is not None,
+        "compliance_llm_model": env_value("CONTENT_LLM_COMPLIANCE_MODEL") is not None,
+        "compliance_cache_size": env_value("CONTENT_COMPLIANCE_CACHE_SIZE") is not None,
+        "compliance_auto_check": env_value("CONTENT_COMPLIANCE_AUTO_CHECK") is not None,
+        "compliance_concurrency": env_value("CONTENT_COMPLIANCE_CONCURRENCY") is not None,
+        "external_database_url": env_value("DATABASE_URL") is not None,
+        "pending_output_dir": env_value("PENDING_OUTPUT_DIR") is not None,
+        "wechat_app_id": env_value("WECHAT_APP_ID") is not None,
+        "wechat_app_secret": env_value("WECHAT_APP_SECRET") is not None,
+        "wechat_auto_publish": env_value("WECHAT_AUTO_PUBLISH") is not None,
+        "wechat_enable_mass_send": env_value("WECHAT_ENABLE_MASS_SEND") is not None,
+        "scheduler_enabled": env_value("SCHEDULER_ENABLED") is not None,
+        "scheduler_interval_minutes": env_value("SCHEDULER_INTERVAL_MINUTES") is not None,
     }
 
 
@@ -337,7 +337,7 @@ def config_for_request(payload: dict[str, Any]):
     if not isinstance(personal_config, dict):
         return config
     normalized = normalize_config_update(personal_config, load_json_config())
-    return config_from_dict(normalized)
+    return config_from_dict(normalized, prefer_config=True)
 
 
 def config_from_form() -> Any:

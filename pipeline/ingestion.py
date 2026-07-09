@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 import os
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -27,9 +27,18 @@ TYPE_LABELS = {
 }
 
 
+def ensure_mysql_utf8mb4(database_url: str) -> str:
+    if not database_url.startswith("mysql"):
+        return database_url
+    parts = urlsplit(database_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.setdefault("charset", "utf8mb4")
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 def build_external_database_url(config: AppConfig) -> str:
     if config.external_database_url:
-        return config.external_database_url
+        return ensure_mysql_utf8mb4(config.external_database_url)
 
     host = os.getenv("DB_HOST", "127.0.0.1")
     port = os.getenv("DB_PORT", "3306")
@@ -37,7 +46,7 @@ def build_external_database_url(config: AppConfig) -> str:
     password = quote_plus(os.getenv("DB_PASSWORD", ""))
     database = os.getenv("DB_NAME", "operation_agent")
     charset = os.getenv("DB_CHARSET", "utf8mb4")
-    return f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}?charset={charset}"
+    return ensure_mysql_utf8mb4(f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}?charset={charset}")
 
 
 def create_external_engine(config: AppConfig) -> Engine:

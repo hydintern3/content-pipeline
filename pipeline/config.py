@@ -104,14 +104,89 @@ def nested_get(config: dict[str, Any], path: str, default: Any = "") -> Any:
     return current
 
 
-def str_env(name: str, config: dict[str, Any], config_path: str, default: str = "") -> str:
+def env_value(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return None
+    return str(value).strip()
+
+
+def config_value(config: dict[str, Any], config_path: str) -> Any:
+    return nested_get(config, config_path, None)
+
+
+def prefer_config_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def str_env(
+    name: str,
+    config: dict[str, Any],
+    config_path: str,
+    default: str = "",
+    prefer_config: bool = False,
+) -> str:
+    configured = config_value(config, config_path)
+    if prefer_config and prefer_config_value(configured):
+        value = configured
+    else:
+        value = env_value(name)
+    if value is None:
+        value = configured if configured is not None else default
+    return str(value or "").strip()
+
+
+def bool_env(
+    name: str,
+    config: dict[str, Any],
+    config_path: str,
+    default: bool = False,
+    prefer_config: bool = False,
+) -> bool:
+    configured = config_value(config, config_path)
+    if prefer_config and prefer_config_value(configured):
+        value = configured
+    else:
+        value = env_value(name)
+    if value is None:
+        value = configured if configured is not None else default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def int_env(
+    name: str,
+    config: dict[str, Any],
+    config_path: str,
+    default: int,
+    prefer_config: bool = False,
+) -> int:
+    configured = config_value(config, config_path)
+    if prefer_config and prefer_config_value(configured):
+        value = configured
+    else:
+        value = env_value(name)
+    if value is None:
+        value = configured if configured is not None else default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def str_env_legacy(name: str, config: dict[str, Any], config_path: str, default: str = "") -> str:
     value = os.getenv(name)
     if value is None:
         value = nested_get(config, config_path, default)
     return str(value or "").strip()
 
 
-def bool_env(name: str, config: dict[str, Any], config_path: str, default: bool = False) -> bool:
+def bool_env_legacy(name: str, config: dict[str, Any], config_path: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         value = nested_get(config, config_path, default)
@@ -120,7 +195,7 @@ def bool_env(name: str, config: dict[str, Any], config_path: str, default: bool 
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def int_env(name: str, config: dict[str, Any], config_path: str, default: int) -> int:
+def int_env_legacy(name: str, config: dict[str, Any], config_path: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
         value = nested_get(config, config_path, default)
@@ -176,7 +251,7 @@ class AppConfig:
         return bool(self.wechat_app_id and self.wechat_app_secret)
 
 
-def config_from_dict(config: dict[str, Any]) -> AppConfig:
+def config_from_dict(config: dict[str, Any], prefer_config: bool = False) -> AppConfig:
     data_dir = BASE_DIR / "data"
     default_app_db = f"sqlite:///{(data_dir / 'pipeline.db').as_posix()}"
 
@@ -186,44 +261,105 @@ def config_from_dict(config: dict[str, Any]) -> AppConfig:
             config,
             "publish.pending_output_dir",
             str(data_dir / "pending"),
+            prefer_config=prefer_config,
         )
     )
     if not pending_dir.is_absolute():
         pending_dir = BASE_DIR / pending_dir
 
-    interval = str_env("SCHEDULER_INTERVAL_MINUTES", config, "scheduler.interval_minutes", "240")
+    interval = str_env(
+        "SCHEDULER_INTERVAL_MINUTES",
+        config,
+        "scheduler.interval_minutes",
+        "240",
+        prefer_config=prefer_config,
+    )
 
     app_database_url = normalize_sqlite_url(
-        str_env("APP_DATABASE_URL", config, "app_database_url", default_app_db)
+        str_env("APP_DATABASE_URL", config, "app_database_url", default_app_db, prefer_config=prefer_config)
     )
 
     return AppConfig(
         app_database_url=app_database_url,
-        external_database_url=str_env("DATABASE_URL", config, "database.url", ""),
-        llm_api_key=str_env("CONTENT_LLM_API_KEY", config, "llm.api_key", ""),
-        llm_base_url=str_env("CONTENT_LLM_BASE_URL", config, "llm.base_url", "https://api.openai.com/v1"),
-        llm_model=str_env("CONTENT_LLM_MODEL", config, "llm.model", "gpt-4o-mini"),
+        external_database_url=str_env("DATABASE_URL", config, "database.url", "", prefer_config=prefer_config),
+        llm_api_key=str_env("CONTENT_LLM_API_KEY", config, "llm.api_key", "", prefer_config=prefer_config),
+        llm_base_url=str_env(
+            "CONTENT_LLM_BASE_URL",
+            config,
+            "llm.base_url",
+            "https://api.openai.com/v1",
+            prefer_config=prefer_config,
+        ),
+        llm_model=str_env("CONTENT_LLM_MODEL", config, "llm.model", "gpt-4o-mini", prefer_config=prefer_config),
         generation_concurrency=max(
             1,
-            int_env("CONTENT_GENERATION_CONCURRENCY", config, "generation.concurrency", 3),
+            int_env(
+                "CONTENT_GENERATION_CONCURRENCY",
+                config,
+                "generation.concurrency",
+                3,
+                prefer_config=prefer_config,
+            ),
         ),
-        compliance_mock=bool_env("CONTENT_LLM_MOCK", config, "compliance.mock", False),
-        compliance_llm_model=str_env("CONTENT_LLM_COMPLIANCE_MODEL", config, "compliance.llm_model", ""),
+        compliance_mock=bool_env("CONTENT_LLM_MOCK", config, "compliance.mock", False, prefer_config=prefer_config),
+        compliance_llm_model=str_env(
+            "CONTENT_LLM_COMPLIANCE_MODEL",
+            config,
+            "compliance.llm_model",
+            "",
+            prefer_config=prefer_config,
+        ),
         compliance_cache_size=max(
             0,
-            int_env("CONTENT_COMPLIANCE_CACHE_SIZE", config, "compliance.cache_size", 512),
+            int_env(
+                "CONTENT_COMPLIANCE_CACHE_SIZE",
+                config,
+                "compliance.cache_size",
+                512,
+                prefer_config=prefer_config,
+            ),
         ),
-        compliance_auto_check=bool_env("CONTENT_COMPLIANCE_AUTO_CHECK", config, "compliance.auto_check", True),
+        compliance_auto_check=bool_env(
+            "CONTENT_COMPLIANCE_AUTO_CHECK",
+            config,
+            "compliance.auto_check",
+            True,
+            prefer_config=prefer_config,
+        ),
         compliance_concurrency=max(
             1,
-            int_env("CONTENT_COMPLIANCE_CONCURRENCY", config, "compliance.concurrency", 2),
+            int_env(
+                "CONTENT_COMPLIANCE_CONCURRENCY",
+                config,
+                "compliance.concurrency",
+                2,
+                prefer_config=prefer_config,
+            ),
         ),
         pending_output_dir=pending_dir,
-        wechat_app_id=str_env("WECHAT_APP_ID", config, "wechat.app_id", ""),
-        wechat_app_secret=str_env("WECHAT_APP_SECRET", config, "wechat.app_secret", ""),
-        wechat_auto_publish=bool_env("WECHAT_AUTO_PUBLISH", config, "wechat.auto_publish", False),
-        wechat_enable_mass_send=bool_env("WECHAT_ENABLE_MASS_SEND", config, "wechat.enable_mass_send", False),
-        scheduler_enabled=bool_env("SCHEDULER_ENABLED", config, "scheduler.enabled", False),
+        wechat_app_id=str_env("WECHAT_APP_ID", config, "wechat.app_id", "", prefer_config=prefer_config),
+        wechat_app_secret=str_env("WECHAT_APP_SECRET", config, "wechat.app_secret", "", prefer_config=prefer_config),
+        wechat_auto_publish=bool_env(
+            "WECHAT_AUTO_PUBLISH",
+            config,
+            "wechat.auto_publish",
+            False,
+            prefer_config=prefer_config,
+        ),
+        wechat_enable_mass_send=bool_env(
+            "WECHAT_ENABLE_MASS_SEND",
+            config,
+            "wechat.enable_mass_send",
+            False,
+            prefer_config=prefer_config,
+        ),
+        scheduler_enabled=bool_env(
+            "SCHEDULER_ENABLED",
+            config,
+            "scheduler.enabled",
+            False,
+            prefer_config=prefer_config,
+        ),
         scheduler_interval_minutes=max(5, int(interval or "240")),
     )
 

@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pipeline.config import AppConfig
+from pipeline.config import AppConfig, config_from_dict
 from pipeline.batch import create_batch_job, parse_batch_file
 from pipeline.compliance import check_text, clear_cache
 from pipeline.compliance import checker as compliance_checker
@@ -74,6 +74,50 @@ def make_config(tmp_path, **overrides):
     }
     values.update(overrides)
     return AppConfig(**values)
+
+
+def test_request_config_prefer_user_llm_over_server_env(monkeypatch):
+    monkeypatch.setenv("CONTENT_LLM_API_KEY", "server-key")
+    monkeypatch.setenv("CONTENT_LLM_BASE_URL", "https://server.example/v1")
+    monkeypatch.setenv("CONTENT_LLM_MODEL", "server-model")
+
+    request_config = config_from_dict(
+        {
+            "app_database_url": "sqlite:///:memory:",
+            "llm": {
+                "api_key": "user-key",
+                "base_url": "https://user.example/v1",
+                "model": "user-model",
+            },
+        },
+        prefer_config=True,
+    )
+
+    assert request_config.llm_api_key == "user-key"
+    assert request_config.llm_base_url == "https://user.example/v1"
+    assert request_config.llm_model == "user-model"
+
+
+def test_empty_env_does_not_mask_user_llm_config(monkeypatch):
+    monkeypatch.setenv("CONTENT_LLM_API_KEY", "")
+    monkeypatch.setenv("CONTENT_LLM_BASE_URL", "")
+    monkeypatch.setenv("CONTENT_LLM_MODEL", "")
+
+    request_config = config_from_dict(
+        {
+            "app_database_url": "sqlite:///:memory:",
+            "llm": {
+                "api_key": "user-key",
+                "base_url": "https://user.example/v1",
+                "model": "user-model",
+            },
+        },
+        prefer_config=True,
+    )
+
+    assert request_config.llm_api_key == "user-key"
+    assert request_config.llm_base_url == "https://user.example/v1"
+    assert request_config.llm_model == "user-model"
 
 
 def test_normalize_material_accepts_string_lists():

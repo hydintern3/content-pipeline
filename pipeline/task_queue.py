@@ -152,7 +152,7 @@ def execute_task(
     session_factory = worker_session_factory()
     mark_running(session_factory, task_id, celery_task_id=self.request.id)
     try:
-        request_config = config_from_dict(config_payload or load_json_config())
+        request_config = config_from_dict(config_payload or load_json_config(), prefer_config=True)
         result = execute_registered_task(task_type, payload or {}, request_config, session_factory, task_id) or {}
         mark_finished(session_factory, task_id, result)
         return result
