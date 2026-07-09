@@ -186,7 +186,7 @@ const currentFollowUps = computed(() =>
   currentFollowUpArticle.value ? workspace.articleFollowUps(currentFollowUpArticle.value.id) : [],
 );
 const sourceLabel = computed(() => {
-  if (workspace.source === "llm") {
+  if (workspace.source?.startsWith("llm")) {
     return "大模型生成";
   }
   if (workspace.source === "history") {

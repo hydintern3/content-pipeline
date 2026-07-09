@@ -365,6 +365,7 @@ function setArticleMode(card, mode) {
 }
 
 function renderArticles(articles, source) {
+  source = source?.startsWith("llm") ? "llm" : source;
   currentArticles = articles;
   articleList.innerHTML = "";
   emptyState.classList.toggle("hidden", articles.length > 0);
