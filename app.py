@@ -155,6 +155,7 @@ def env_overrides() -> dict[str, bool]:
         "compliance_auto_check": env_value("CONTENT_COMPLIANCE_AUTO_CHECK") is not None,
         "compliance_concurrency": env_value("CONTENT_COMPLIANCE_CONCURRENCY") is not None,
         "external_database_url": env_value("DATABASE_URL") is not None,
+        "external_image_base_url": env_value("DATABASE_IMAGE_BASE_URL") is not None,
         "pending_output_dir": env_value("PENDING_OUTPUT_DIR") is not None,
         "wechat_app_id": env_value("WECHAT_APP_ID") is not None,
         "wechat_app_secret": env_value("WECHAT_APP_SECRET") is not None,
@@ -195,6 +196,7 @@ def default_config_payload() -> dict[str, Any]:
             "database": {
                 "url": "",
                 "configured": config.has_external_database,
+                "image_base_url": saved("database.image_base_url", ""),
             },
             "publish": {
                 "pending_output_dir": saved("publish.pending_output_dir", "data/pending"),
@@ -301,8 +303,12 @@ def normalize_config_update(payload: dict[str, Any], existing: dict[str, Any]) -
     }
 
     database_url = clean_text(database.get("url"))
+    image_base_url = clean_text(
+        database.get("image_base_url", nested_value(existing, "database.image_base_url", ""))
+    )
     updated["database"] = {
         "url": database_url or clean_text(nested_value(existing, "database.url", "")),
+        "image_base_url": image_base_url,
     }
     updated["publish"] = {
         "pending_output_dir": clean_text(
@@ -369,6 +375,7 @@ def config_payload(app_config: Any) -> dict[str, Any]:
         },
         "database": {
             "url": app_config.external_database_url,
+            "image_base_url": app_config.external_image_base_url,
         },
         "publish": {
             "pending_output_dir": str(app_config.pending_output_dir),
@@ -546,6 +553,7 @@ def config_status():
                 "database": {
                     "configured": config.has_external_database,
                     "app_database_url": config.app_database_url,
+                    "image_base_url_configured": bool(config.external_image_base_url),
                 },
                 "wechat": {
                     "configured": config.has_wechat,

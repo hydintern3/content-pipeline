@@ -56,6 +56,7 @@ def make_config(tmp_path, **overrides):
     values = {
         "app_database_url": "sqlite:///:memory:",
         "external_database_url": "",
+        "external_image_base_url": "",
         "llm_api_key": "",
         "llm_base_url": "https://api.openai.com/v1",
         "llm_model": "gpt-4o-mini",
@@ -276,13 +277,21 @@ def make_supply_demand_engine():
 def test_search_supply_demand_filters_and_pagination(monkeypatch, tmp_path):
     engine = make_supply_demand_engine()
     monkeypatch.setattr(ingestion, "create_external_engine", lambda _config: engine)
-    config = make_config(tmp_path, external_database_url="mysql+pymysql://example/source")
+    config = make_config(
+        tmp_path,
+        external_database_url="mysql+pymysql://example/source",
+        external_image_base_url="https://cdn.example.com/assets",
+    )
 
     result = ingestion.search_supply_demand_materials(config, query="小程序", demand_type="DEMAND", category="TECH_SERVICE")
 
     assert result["total"] == 1
     assert result["items"][0]["id"] == 3014
     assert result["items"][0]["material"]["source_ref"] == "3014"
+    assert result["items"][0]["image_urls"] == [
+        "https://cdn.example.com/assets/cover-b.jpg",
+        "https://cdn.example.com/assets/detail-b.jpg",
+    ]
 
     page = ingestion.search_supply_demand_materials(config, limit=1, offset=1)
     assert page["total"] == 2
@@ -773,6 +782,7 @@ def test_request_config_uses_browser_config_without_persisting(tmp_path, monkeyp
                 },
                 "database": {
                     "url": "mysql+pymysql://browser:secret@127.0.0.1:3306/source",
+                    "image_base_url": "https://browser-cdn.example.com",
                 },
                 "publish": {
                     "pending_output_dir": "data/browser-pending",
@@ -795,6 +805,7 @@ def test_request_config_uses_browser_config_without_persisting(tmp_path, monkeyp
     assert request_config.llm_base_url == "https://browser.example/v1"
     assert request_config.llm_model == "browser-model"
     assert request_config.external_database_url.startswith("mysql+pymysql://browser")
+    assert request_config.external_image_base_url == "https://browser-cdn.example.com"
     assert request_config.wechat_app_id == "wx-browser"
     assert request_config.wechat_app_secret == "browser-secret"
     assert request_config.wechat_auto_publish is True

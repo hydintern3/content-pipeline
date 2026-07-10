@@ -16,7 +16,8 @@
     "concurrency": 2
   },
   "database": {
-    "url": "mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4"
+    "url": "mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4",
+    "image_base_url": "https://replace-with-file-domain"
   },
   "publish": {
     "pending_output_dir": "data/pending"

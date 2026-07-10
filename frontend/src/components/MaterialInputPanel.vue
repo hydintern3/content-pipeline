@@ -41,6 +41,24 @@
         </el-radio-group>
       </el-form-item>
 
+      <div v-if="materialImagePreviews.length" class="image-preview-grid material-image-preview">
+        <figure v-for="item in materialImagePreviews" :key="item.path" class="image-preview-card">
+          <el-image
+            v-if="item.url"
+            :src="item.url"
+            :preview-src-list="materialPreviewUrls"
+            fit="cover"
+            loading="lazy"
+          >
+            <template #error>
+              <div class="image-preview-fallback">{{ item.path }}</div>
+            </template>
+          </el-image>
+          <div v-else class="image-preview-fallback">{{ item.path }}</div>
+          <figcaption>{{ item.path }}</figcaption>
+        </figure>
+      </div>
+
       <div v-if="workspace.generationMode === 'variants'" class="two-col">
         <el-form-item label="变体平台">
           <el-select v-model="workspace.variantPlatform">
@@ -153,8 +171,22 @@
         <el-button type="primary" @click="importSelectedMaterial">导入素材框</el-button>
       </div>
       <pre>{{ selectedDatabaseItem.material.raw_content }}</pre>
-      <div v-if="selectedDatabaseItem.image_paths.length" class="database-image-list">
-        <el-tag v-for="path in selectedDatabaseItem.image_paths" :key="path" size="small">{{ path }}</el-tag>
+      <div v-if="selectedDatabaseImagePreviews.length" class="image-preview-grid">
+        <figure v-for="item in selectedDatabaseImagePreviews" :key="item.path" class="image-preview-card">
+          <el-image
+            v-if="item.url"
+            :src="item.url"
+            :preview-src-list="selectedDatabasePreviewUrls"
+            fit="cover"
+            loading="lazy"
+          >
+            <template #error>
+              <div class="image-preview-fallback">{{ item.path }}</div>
+            </template>
+          </el-image>
+          <div v-else class="image-preview-fallback">{{ item.path }}</div>
+          <figcaption>{{ item.path }}</figcaption>
+        </figure>
       </div>
     </section>
   </el-drawer>
@@ -169,6 +201,7 @@ import { searchDatabaseMaterials } from "@/api/client";
 import { platformOptions } from "@/constants";
 import { useConfigStore } from "@/stores/config";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { commaList } from "@/utils/text";
 import type { DatabaseMaterialItem } from "@/types";
 
 const workspace = useWorkspaceStore();
@@ -186,6 +219,47 @@ const searchForm = ref({
   offset: 0,
 });
 const currentPage = computed(() => Math.floor(searchForm.value.offset / searchForm.value.limit) + 1);
+const imageBaseUrl = computed(() => configStore.effective?.config.database.image_base_url || "");
+
+function resolveImageUrl(path: string, explicitUrl = "") {
+  const trimmedPath = String(path || "").trim();
+  const trimmedUrl = String(explicitUrl || "").trim();
+  if (trimmedUrl) {
+    return trimmedUrl;
+  }
+  if (!trimmedPath) {
+    return "";
+  }
+  if (trimmedPath.startsWith("http://") || trimmedPath.startsWith("https://") || trimmedPath.startsWith("//")) {
+    return trimmedPath;
+  }
+  const baseUrl = imageBaseUrl.value.trim();
+  if (!baseUrl) {
+    return "";
+  }
+  return `${baseUrl.replace(/\/+$/, "")}/${trimmedPath.replace(/^\/+/, "")}`;
+}
+
+const materialImagePreviews = computed(() =>
+  commaList(workspace.material.image_paths).map((path) => ({
+    path,
+    url: resolveImageUrl(path),
+  })),
+);
+const materialPreviewUrls = computed(() => materialImagePreviews.value.map((item) => item.url).filter(Boolean));
+const selectedDatabaseImagePreviews = computed(() => {
+  const item = selectedDatabaseItem.value;
+  if (!item) {
+    return [];
+  }
+  return item.image_paths.map((path, index) => ({
+    path,
+    url: resolveImageUrl(path, (item.image_urls || [])[index] || ""),
+  }));
+});
+const selectedDatabasePreviewUrls = computed(() =>
+  selectedDatabaseImagePreviews.value.map((item) => item.url).filter(Boolean),
+);
 
 async function generate() {
   if (!workspace.material.title_hint || !workspace.material.raw_content) {

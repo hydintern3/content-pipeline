@@ -32,6 +32,7 @@ export interface DatabaseMaterialItem {
   created_at: string;
   updated_at: string;
   image_paths: string[];
+  image_urls: string[];
   extra_fields: Record<string, unknown>;
   material: MaterialPayload & {
     source_type: string;
@@ -248,6 +249,7 @@ export interface RuntimeConfig {
   database: {
     url?: string;
     configured?: boolean;
+    image_base_url?: string;
   };
   publish: {
     pending_output_dir: string;

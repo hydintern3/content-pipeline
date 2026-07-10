@@ -84,6 +84,27 @@ def normalize_image_paths(cover_image: Any, images: Any) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def is_http_url(value: str) -> bool:
+    return value.startswith("http://") or value.startswith("https://")
+
+
+def resolve_image_url(path: str, base_url: str = "") -> str:
+    path = str(path or "").strip()
+    base_url = str(base_url or "").strip()
+    if not path:
+        return ""
+    if is_http_url(path) or path.startswith("//"):
+        return path
+    if not base_url:
+        return ""
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def resolve_image_urls(paths: list[str], base_url: str = "") -> list[str]:
+    urls = [resolve_image_url(path, base_url) for path in paths]
+    return [url for url in urls if url]
+
+
 def format_created_at(value: Any) -> str:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M")
@@ -222,7 +243,7 @@ def material_payload(material: MaterialInput) -> dict[str, Any]:
     }
 
 
-def row_to_database_item(row: Any) -> dict[str, Any]:
+def row_to_database_item(row: Any, image_base_url: str = "") -> dict[str, Any]:
     material = row_to_material(row)
     demand_type = str(row["type"] or "")
     category = str(row["category"] or "")
@@ -243,6 +264,7 @@ def row_to_database_item(row: Any) -> dict[str, Any]:
         "created_at": format_created_at(row["created_at"]),
         "updated_at": format_created_at(row["updated_at"]),
         "image_paths": material.image_paths,
+        "image_urls": resolve_image_urls(material.image_paths, image_base_url),
         "extra_fields": parse_json_value(row["extra_fields"]) or {},
         "material": material_payload(material),
     }
@@ -333,7 +355,7 @@ def search_supply_demand_materials(
         rows = conn.execute(list_sql, {**params, "limit": limit, "offset": offset}).mappings().all()
 
     return {
-        "items": [row_to_database_item(row) for row in rows],
+        "items": [row_to_database_item(row, config.external_image_base_url) for row in rows],
         "total": total,
         "limit": limit,
         "offset": offset,

@@ -33,6 +33,7 @@ CONTENT_LLM_API_KEY=sk-...
 CONTENT_LLM_BASE_URL=https://api.openai.com/v1
 CONTENT_LLM_MODEL=gpt-4o-mini
 DATABASE_URL=mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4
+DATABASE_IMAGE_BASE_URL=https://replace-with-file-domain
 APP_PORT=5000
 CELERY_WORKER_CONCURRENCY=2
 ```
@@ -55,11 +56,13 @@ For external managed PostgreSQL, replace it with your provider URL and keep the 
 
 - `APP_DATABASE_URL`: the pipeline application's primary PostgreSQL database for tasks, articles, logs, and generated history.
 - `DATABASE_URL`: the external MySQL source database used by `POST /api/materials/pull_recent`.
+- `DATABASE_IMAGE_BASE_URL`: the public or intranet file-service base URL used to preview relative mini-program image paths such as `private/common/a.jpg`.
 
 For the Shangying mini-program source database, set:
 
 ```text
 DATABASE_URL=mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4
+DATABASE_IMAGE_BASE_URL=https://replace-with-file-domain
 ```
 
 In Docker Compose, this value is passed to both `web` and `worker`. If you configure the app with `config.json` instead of environment variables, use:
@@ -67,14 +70,15 @@ In Docker Compose, this value is passed to both `web` and `worker`. If you confi
 ```json
 {
   "database": {
-    "url": "mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4"
+    "url": "mysql+pymysql://pipeline_reader:replace-with-password@81.68.133.54:3306/shangying_mvp?charset=utf8mb4",
+    "image_base_url": "https://replace-with-file-domain"
   }
 }
 ```
 
 `config.shangying.example.json` contains the same PostgreSQL + Shangying MySQL layout and can be copied to `config.json` before replacing passwords.
 
-Environment variables take precedence over `config.json`, so a non-empty `DATABASE_URL` in `.env` overrides `database.url`.
+Environment variables take precedence over `config.json`, so a non-empty `DATABASE_URL` in `.env` overrides `database.url`, and `DATABASE_IMAGE_BASE_URL` overrides `database.image_base_url`.
 
 Database connection pool settings:
 

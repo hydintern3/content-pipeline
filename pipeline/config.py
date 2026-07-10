@@ -39,6 +39,7 @@ def default_json_config() -> dict[str, Any]:
         },
         "database": {
             "url": "",
+            "image_base_url": "",
         },
         "publish": {
             "pending_output_dir": "data/pending",
@@ -221,6 +222,7 @@ def normalize_sqlite_url(value: str) -> str:
 class AppConfig:
     app_database_url: str
     external_database_url: str
+    external_image_base_url: str
     llm_api_key: str
     llm_base_url: str
     llm_model: str
@@ -282,6 +284,13 @@ def config_from_dict(config: dict[str, Any], prefer_config: bool = False) -> App
     return AppConfig(
         app_database_url=app_database_url,
         external_database_url=str_env("DATABASE_URL", config, "database.url", "", prefer_config=prefer_config),
+        external_image_base_url=str_env(
+            "DATABASE_IMAGE_BASE_URL",
+            config,
+            "database.image_base_url",
+            "",
+            prefer_config=prefer_config,
+        ),
         llm_api_key=str_env("CONTENT_LLM_API_KEY", config, "llm.api_key", "", prefer_config=prefer_config),
         llm_base_url=str_env(
             "CONTENT_LLM_BASE_URL",

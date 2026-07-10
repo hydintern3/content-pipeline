@@ -38,6 +38,9 @@
       <el-form-item label="外部素材数据库 URL">
         <el-input v-model="form.database.url" type="password" show-password placeholder="留空保持不变" />
       </el-form-item>
+      <el-form-item label="外部素材图片 Base URL">
+        <el-input v-model="form.database.image_base_url" placeholder="https://example.com/" />
+      </el-form-item>
       <el-form-item label="待发布目录">
         <el-input v-model="form.publish.pending_output_dir" />
       </el-form-item>
@@ -103,6 +106,8 @@ async function open() {
     form.value = JSON.parse(JSON.stringify(config));
     form.value!.llm.api_key = configStore.localConfig.llm?.api_key || "";
     form.value!.database.url = configStore.localConfig.database?.url || "";
+    form.value!.database.image_base_url =
+      configStore.localConfig.database?.image_base_url || config.database.image_base_url || "";
     form.value!.wechat.app_secret = configStore.localConfig.wechat?.app_secret || "";
   }
 }
@@ -127,6 +132,7 @@ function compact(config: RuntimeConfig): Partial<RuntimeConfig> {
     },
     database: {
       ...(config.database.url ? { url: config.database.url } : {}),
+      ...(config.database.image_base_url ? { image_base_url: config.database.image_base_url } : {}),
     },
     publish: {
       pending_output_dir: config.publish.pending_output_dir,

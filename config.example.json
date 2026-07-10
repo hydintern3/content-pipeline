@@ -16,7 +16,8 @@
     "concurrency": 2
   },
   "database": {
-    "url": ""
+    "url": "",
+    "image_base_url": ""
   },
   "publish": {
     "pending_output_dir": "data/pending"

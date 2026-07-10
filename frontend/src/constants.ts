@@ -26,6 +26,7 @@ export const overrideLabels: Record<string, string> = {
   compliance_auto_check: "自动合规检查",
   compliance_concurrency: "合规并发数",
   external_database_url: "外部素材数据库",
+  external_image_base_url: "外部素材图片 Base URL",
   pending_output_dir: "待发布目录",
   wechat_app_id: "公众号 App ID",
   wechat_app_secret: "公众号 App Secret",
