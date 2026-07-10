@@ -148,6 +148,60 @@ textarea {
   font-size: 12px;
 }
 
+.database-search-form {
+  margin-bottom: 12px;
+}
+
+.database-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin: 12px 0;
+}
+
+.database-preview {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.database-preview-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.database-preview-heading div {
+  display: grid;
+  gap: 4px;
+}
+
+.database-preview-heading small {
+  color: #64748b;
+}
+
+.database-preview pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #334155;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.database-image-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .article-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));

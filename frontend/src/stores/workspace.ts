@@ -16,6 +16,7 @@ import type {
   Article,
   ArticleFollowUp,
   ComplianceResult,
+  DatabaseMaterialItem,
   GenerationHistoryDetail,
   MaterialPayload,
   Platform,
@@ -432,6 +433,16 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     return true;
   }
 
+  function importDatabaseMaterial(item: DatabaseMaterialItem) {
+    material.value = {
+      title_hint: item.material.title_hint,
+      raw_content: item.material.raw_content,
+      keywords: item.material.keywords.join(", "),
+      image_paths: item.material.image_paths.join(", "),
+      target_platforms: item.material.target_platforms,
+    };
+  }
+
   async function publishArticles(articleIds: number[], mode = "file") {
     const configStore = useConfigStore();
     const payload = await publishArticlesRequest(articleIds, mode, configStore.requestConfig());
@@ -531,6 +542,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     fillExample,
     followUpArticle,
     generate,
+    importDatabaseMaterial,
     isCheckingCompliance,
     isFollowingUp,
     loadTasks,

@@ -6,6 +6,7 @@ import type {
   BatchJob,
   ComplianceResult,
   ConfigEnvelope,
+  DatabaseMaterialSearchResult,
   GenerationHistoryDetail,
   GenerationHistoryItem,
   ImageAsset,
@@ -145,6 +146,19 @@ export function watchTaskJob(
 export async function pullRecentMaterials(limit: number, config: object) {
   const payload = await unwrap(http.post("/api/materials/pull_recent", { limit, config }));
   return payload as unknown as { materials: MaterialRecord[] };
+}
+
+export async function searchDatabaseMaterials(
+  params: { q?: string; type?: string; category?: string; limit?: number; offset?: number },
+  config: object,
+) {
+  const payload = await unwrap(
+    http.post("/api/materials/database/search", {
+      ...params,
+      config,
+    }),
+  );
+  return payload as unknown as DatabaseMaterialSearchResult;
 }
 
 export async function publishArticles(articleIds: number[], mode: string, config: object) {

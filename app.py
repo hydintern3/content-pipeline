@@ -27,7 +27,7 @@ from pipeline.generation import (
     set_llm_observer,
 )
 from pipeline.image_processing import process_image
-from pipeline.ingestion import fetch_recent_materials
+from pipeline.ingestion import fetch_recent_materials, search_supply_demand_materials
 from pipeline.models import BatchJob, ImageAsset, ImageVariant, TaskJob
 from pipeline.observability import observability_summary, record_llm_call, record_log
 from pipeline.publishers import publish_article
@@ -700,6 +700,25 @@ def pull_recent_materials():
     except Exception as exc:
         LOGGER.exception("Recent material pull failed")
         return error(f"数据库拉取失败：{exc}", 500)
+
+
+@app.post("/api/materials/database/search")
+def search_database_materials():
+    payload = request.get_json(silent=True) or {}
+    try:
+        request_config = config_for_request(payload)
+        result = search_supply_demand_materials(
+            request_config,
+            query=clean_text(payload.get("q")),
+            demand_type=clean_text(payload.get("type")),
+            category=clean_text(payload.get("category")),
+            limit=payload.get("limit") or 10,
+            offset=payload.get("offset") or 0,
+        )
+        return ok(result)
+    except Exception as exc:
+        LOGGER.exception("Database material search failed")
+        return error(f"数据库搜索失败：{exc}", 500)
 
 
 @app.post("/api/publish")

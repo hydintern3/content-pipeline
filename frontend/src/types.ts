@@ -15,6 +15,37 @@ export interface MaterialRecord extends MaterialPayload {
   created_at: string;
 }
 
+export interface DatabaseMaterialItem {
+  id: number;
+  title: string;
+  type: string;
+  type_label: string;
+  category: string;
+  category_label: string;
+  description: string;
+  publisher_name: string;
+  address: string;
+  contact_name: string;
+  contact_phone: string;
+  price: string;
+  price_unit: string;
+  created_at: string;
+  updated_at: string;
+  image_paths: string[];
+  extra_fields: Record<string, unknown>;
+  material: MaterialPayload & {
+    source_type: string;
+    source_ref: string;
+  };
+}
+
+export interface DatabaseMaterialSearchResult {
+  items: DatabaseMaterialItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface Article {
   id: number;
   material_id: number;

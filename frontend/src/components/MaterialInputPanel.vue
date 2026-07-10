@@ -6,13 +6,13 @@
           <p>素材</p>
           <h2>统一输入</h2>
         </div>
-        <el-button :icon="Download" @click="pullRecent">拉取最近数据</el-button>
+        <el-button :icon="Download" @click="openMaterialPicker">选择小程序素材</el-button>
       </div>
     </template>
 
     <el-form label-position="top" @submit.prevent>
       <el-form-item label="标题提示">
-        <el-input v-model="workspace.material.title_hint" placeholder="例如：商引-商机地图小程序上线" />
+        <el-input v-model="workspace.material.title_hint" placeholder="例如：商引羚航供需信息" />
       </el-form-item>
 
       <el-form-item label="素材正文">
@@ -86,16 +86,106 @@
       </div>
     </el-form>
   </el-card>
+
+  <el-drawer v-model="pickerOpen" title="小程序供需素材库" size="760px" @open="loadDatabaseMaterials">
+    <el-form class="database-search-form" inline @submit.prevent>
+      <el-form-item label="关键词">
+        <el-input
+          v-model="searchForm.q"
+          clearable
+          placeholder="标题、描述、地址、发布人"
+          @keyup.enter="searchDatabase"
+        />
+      </el-form-item>
+      <el-form-item label="类型">
+        <el-select v-model="searchForm.type" clearable placeholder="全部" style="width: 120px">
+          <el-option label="供应" value="SUPPLY" />
+          <el-option label="需求" value="DEMAND" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="分类">
+        <el-select v-model="searchForm.category" clearable placeholder="全部" style="width: 160px">
+          <el-option label="人才招聘/求职" value="TALENT" />
+          <el-option label="技术服务" value="TECH_SERVICE" />
+          <el-option label="楼宇空间" value="BUILDING" />
+          <el-option label="商品资源" value="GOODS" />
+          <el-option label="服务资源" value="SERVICE" />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" :loading="databaseLoading" @click="searchDatabase">搜索</el-button>
+      </el-form-item>
+    </el-form>
+
+    <el-table
+      :data="databaseItems"
+      v-loading="databaseLoading"
+      highlight-current-row
+      size="small"
+      @row-click="selectDatabaseItem"
+    >
+      <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="type_label" label="类型" width="80" />
+      <el-table-column prop="category_label" label="分类" width="130" />
+      <el-table-column prop="publisher_name" label="发布方" width="110" show-overflow-tooltip />
+      <el-table-column prop="created_at" label="发布时间" width="150" />
+      <el-table-column prop="address" label="地址" min-width="160" show-overflow-tooltip />
+    </el-table>
+
+    <div class="database-pagination">
+      <el-pagination
+        layout="prev, pager, next, total"
+        :total="databaseTotal"
+        :page-size="searchForm.limit"
+        :current-page="currentPage"
+        @current-change="changeDatabasePage"
+      />
+    </div>
+
+    <el-empty v-if="!databaseLoading && !databaseItems.length" description="暂无匹配素材" />
+
+    <section v-if="selectedDatabaseItem" class="database-preview">
+      <div class="database-preview-heading">
+        <div>
+          <strong>{{ selectedDatabaseItem.title }}</strong>
+          <small>{{ selectedDatabaseItem.type_label }} · {{ selectedDatabaseItem.category_label }}</small>
+        </div>
+        <el-button type="primary" @click="importSelectedMaterial">导入素材框</el-button>
+      </div>
+      <pre>{{ selectedDatabaseItem.material.raw_content }}</pre>
+      <div v-if="selectedDatabaseItem.image_paths.length" class="database-image-list">
+        <el-tag v-for="path in selectedDatabaseItem.image_paths" :key="path" size="small">{{ path }}</el-tag>
+      </div>
+    </section>
+  </el-drawer>
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import { Download, Promotion } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
+import { searchDatabaseMaterials } from "@/api/client";
 import { platformOptions } from "@/constants";
+import { useConfigStore } from "@/stores/config";
 import { useWorkspaceStore } from "@/stores/workspace";
+import type { DatabaseMaterialItem } from "@/types";
 
 const workspace = useWorkspaceStore();
+const configStore = useConfigStore();
+const pickerOpen = ref(false);
+const databaseLoading = ref(false);
+const databaseItems = ref<DatabaseMaterialItem[]>([]);
+const databaseTotal = ref(0);
+const selectedDatabaseItem = ref<DatabaseMaterialItem | null>(null);
+const searchForm = ref({
+  q: "",
+  type: "",
+  category: "",
+  limit: 10,
+  offset: 0,
+});
+const currentPage = computed(() => Math.floor(searchForm.value.offset / searchForm.value.limit) + 1);
 
 async function generate() {
   if (!workspace.material.title_hint || !workspace.material.raw_content) {
@@ -118,16 +208,44 @@ async function generate() {
   }
 }
 
-async function pullRecent() {
+function openMaterialPicker() {
+  pickerOpen.value = true;
+}
+
+async function loadDatabaseMaterials() {
+  databaseLoading.value = true;
   try {
-    const loaded = await workspace.pullRecent();
-    if (loaded) {
-      ElMessage.success("已填入最近一条素材");
-    } else {
-      ElMessage.warning("暂无最近数据");
-    }
+    const payload = await searchDatabaseMaterials(searchForm.value, configStore.requestConfig());
+    databaseItems.value = payload.items;
+    databaseTotal.value = payload.total;
+    selectedDatabaseItem.value = payload.items[0] || null;
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "拉取失败");
+    ElMessage.error(error instanceof Error ? error.message : "素材库搜索失败");
+  } finally {
+    databaseLoading.value = false;
   }
+}
+
+async function searchDatabase() {
+  searchForm.value.offset = 0;
+  await loadDatabaseMaterials();
+}
+
+async function changeDatabasePage(page: number) {
+  searchForm.value.offset = Math.max(0, page - 1) * searchForm.value.limit;
+  await loadDatabaseMaterials();
+}
+
+function selectDatabaseItem(item: DatabaseMaterialItem) {
+  selectedDatabaseItem.value = item;
+}
+
+function importSelectedMaterial() {
+  if (!selectedDatabaseItem.value) {
+    return;
+  }
+  workspace.importDatabaseMaterial(selectedDatabaseItem.value);
+  pickerOpen.value = false;
+  ElMessage.success("已导入素材框，可编辑后生成");
 }
 </script>

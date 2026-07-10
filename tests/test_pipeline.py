@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from pipeline import ingestion
 from pipeline.config import AppConfig, config_from_dict
 from pipeline.batch import create_batch_job, parse_batch_file
 from pipeline.compliance import check_text, clear_cache
@@ -118,6 +119,190 @@ def test_empty_env_does_not_mask_user_llm_config(monkeypatch):
     assert request_config.llm_api_key == "user-key"
     assert request_config.llm_base_url == "https://user.example/v1"
     assert request_config.llm_model == "user-model"
+
+
+def make_supply_demand_engine():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE t_supply_demand (
+                supply_demand_id INTEGER PRIMARY KEY,
+                title TEXT,
+                type TEXT,
+                category TEXT,
+                description TEXT,
+                cover_image TEXT,
+                images TEXT,
+                address TEXT,
+                contact_name TEXT,
+                contact_phone TEXT,
+                price NUMERIC,
+                price_unit TEXT,
+                extra_fields TEXT,
+                publisher_id INTEGER,
+                status TEXT,
+                deleted_flag INTEGER,
+                create_time TEXT,
+                update_time TEXT
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE t_c_user (
+                user_id INTEGER PRIMARY KEY,
+                nickname TEXT,
+                deleted_flag INTEGER
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO t_c_user (user_id, nickname, deleted_flag) VALUES "
+            "(1008, '微笑向暖', 0), (1007, '小李知恩', 0)"
+        )
+        rows = [
+            (
+                3016,
+                "招聘后端开发人员",
+                "DEMAND",
+                "TALENT",
+                "招聘开发人员若干名",
+                "cover-a.jpg",
+                '["detail-a.jpg"]',
+                "上海市杨浦区国霞路60号君庭广场",
+                "微笑向暖",
+                "18101978927",
+                None,
+                None,
+                json.dumps(
+                    {
+                        "skills": ["java", "mysql", "vue"],
+                        "education": "本科",
+                        "experience": "1-3年",
+                        "salary_range": {"max": 25, "min": 15, "unit": "K"},
+                    },
+                    ensure_ascii=False,
+                ),
+                1008,
+                "PUBLISHED",
+                0,
+                "2026-05-28 14:51:49",
+                "2026-07-09 12:28:42",
+            ),
+            (
+                3014,
+                "需要小程序外包服务，价格另谈",
+                "DEMAND",
+                "TECH_SERVICE",
+                "需要为自营店铺开发一款小程序",
+                "cover-b.jpg",
+                '["detail-b.jpg"]',
+                "上海市杨浦区",
+                "微笑向暖",
+                "18101978927",
+                50000,
+                "元",
+                json.dumps(
+                    {
+                        "budget": {"max": 50000, "min": 30000, "unit": "元"},
+                        "duration": "2个月",
+                        "deliverables": ["小程序", "web"],
+                        "tech_requirements": ["uni-app"],
+                    },
+                    ensure_ascii=False,
+                ),
+                1008,
+                "PUBLISHED",
+                0,
+                "2026-05-28 11:32:29",
+                "2026-07-09 12:28:10",
+            ),
+            (
+                3013,
+                "已删除求职信息",
+                "SUPPLY",
+                "TALENT",
+                "不应返回",
+                None,
+                None,
+                None,
+                "小李知恩",
+                None,
+                None,
+                None,
+                "{}",
+                1007,
+                "PUBLISHED",
+                1,
+                "2026-05-28 11:26:12",
+                "2026-06-10 09:38:46",
+            ),
+            (
+                3012,
+                "草稿供需信息",
+                "SUPPLY",
+                "TALENT",
+                "不应返回",
+                None,
+                None,
+                None,
+                "小李知恩",
+                None,
+                None,
+                None,
+                "{}",
+                1007,
+                "DRAFT",
+                0,
+                "2026-05-28 10:00:00",
+                "2026-05-28 10:00:00",
+            ),
+        ]
+        connection.exec_driver_sql(
+            """
+            INSERT INTO t_supply_demand (
+                supply_demand_id, title, type, category, description, cover_image,
+                images, address, contact_name, contact_phone, price, price_unit,
+                extra_fields, publisher_id, status, deleted_flag, create_time, update_time
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    return engine
+
+
+def test_search_supply_demand_filters_and_pagination(monkeypatch, tmp_path):
+    engine = make_supply_demand_engine()
+    monkeypatch.setattr(ingestion, "create_external_engine", lambda _config: engine)
+    config = make_config(tmp_path, external_database_url="mysql+pymysql://example/source")
+
+    result = ingestion.search_supply_demand_materials(config, query="小程序", demand_type="DEMAND", category="TECH_SERVICE")
+
+    assert result["total"] == 1
+    assert result["items"][0]["id"] == 3014
+    assert result["items"][0]["material"]["source_ref"] == "3014"
+
+    page = ingestion.search_supply_demand_materials(config, limit=1, offset=1)
+    assert page["total"] == 2
+    assert [item["id"] for item in page["items"]] == [3014]
+
+
+def test_supply_demand_material_format_is_readable(monkeypatch, tmp_path):
+    engine = make_supply_demand_engine()
+    monkeypatch.setattr(ingestion, "create_external_engine", lambda _config: engine)
+    config = make_config(tmp_path, external_database_url="mysql+pymysql://example/source")
+
+    result = ingestion.search_supply_demand_materials(config, query="后端")
+    material = result["items"][0]["material"]
+
+    assert material["title_hint"] == "人才招聘/求职｜招聘后端开发人员"
+    assert "技能：java、mysql、vue" in material["raw_content"]
+    assert "薪资范围：15-25K" in material["raw_content"]
+    assert '"skills"' not in material["raw_content"]
+    assert material["image_paths"] == ["cover-a.jpg", "detail-a.jpg"]
+    assert "java" in material["keywords"]
 
 
 def test_normalize_material_accepts_string_lists():
